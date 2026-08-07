@@ -8,7 +8,9 @@ from memory.token_window import prune
 from skills import collect_tools
 from skills.web_search import TOOLS as ws_tools, TOOL_MAP as ws_map
 from skills.basic_tools import TOOLS as bt_tools, TOOL_MAP as bt_map
-from memory.sessions import load_last_session, save_session   # 新增：跨重启会话持久化
+from memory.sessions import load_last_session, save_session, autosave   # 新增：跨重启会话持久化
+from memory.profile import (load_profile, save_profile, merge_facts,    # 新增：LTM 用户档案卡
+                            to_context_text, extract_facts)
 
 # ===================== 配置 =====================
 API_KEY = os.getenv("DEEPSEEK_API_KEY")
@@ -89,8 +91,13 @@ async def llm_stream_final_answer(messages: list) -> str:
 async def main():
     # ===== ① 启动即读回：跨重启连续的关键（只写不读 = 重启仍空记忆）=====
     last_msgs = load_last_session()          # 读取上次完整对话（含旧 system）
-    system_msg = {"role": "system",
-                  "content": "你是助手，可以调用工具查询时间、计算、联网搜索。"}
+    # ===== 新增：载入 LTM 用户档案卡，渲染进 system 提示词（latest-wins 已落盘）=====
+    profile = load_profile()
+    profile_text = to_context_text(profile)
+    system_content = "你是助手，可以调用工具查询时间、计算、联网搜索。"
+    if profile_text:
+        system_content += "\n\n[用户档案]\n" + profile_text   # 常驻注入，≤上下文预算
+    system_msg = {"role": "system", "content": system_content}
     messages = [system_msg]
 
     # ② 模式 A 续聊：把上次对话（去掉旧 system）接在后面，实现"接着聊"
@@ -98,80 +105,100 @@ async def main():
         body = [m for m in last_msgs if m["role"] != "system"]
         messages += body
         print(f"[系统] 已恢复上次会话（{len(body)} 条历史消息）。")
+        if profile_text:
+            print("[系统] 已载入用户档案卡（LTM）。")
 
     # ③ 重载后立即裁剪，防止旧历史直接撑爆上下文窗口
     messages = prune(messages, max_tokens=12000, soft_ratio=0.8)
 
     print("===== DeepSeek Function Calling 终端Demo | 输入exit退出 =====")
 
-    while True:
-        try:
-            user_input = input("\n你：").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\n程序退出")
-            break
-        if user_input.lower() == "exit":
-            print("程序退出")
-            break
-        if not user_input:
-            continue
+    try:
+        while True:
+            try:
+                user_input = input("\n你：").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n[系统] 已退出。")
+                break
+            if user_input.lower() == "exit":
+                print("[系统] 已退出。")
+                break
+            if not user_input:
+                continue
 
-        messages.append({"role": "user", "content": user_input})
+            messages.append({"role": "user", "content": user_input})
 
-        try:
-            # ---- 工具调用循环 ----
-            while True:
-                ai_msg = await llm_detect_tool_call(messages)
-                if ai_msg.get("tool_calls"):
-                    messages.append(ai_msg)
-                    for tool_call in ai_msg["tool_calls"]:
-                        call_id = tool_call["id"]
-                        func_info = tool_call["function"]
-                        func_name = func_info["name"]
-                        try:
-                            args = json.loads(func_info["arguments"] or "{}")
-                        except json.JSONDecodeError:
-                            args = {}
-                        func = tool_map.get(func_name)
-                        if func is None:
-                            tool_result = f"错误：未知工具 {func_name}"
-                        else:
+            try:
+                # ---- 工具调用循环 ----
+                while True:
+                    ai_msg = await llm_detect_tool_call(messages)
+                    if ai_msg.get("tool_calls"):
+                        messages.append(ai_msg)
+                        for tool_call in ai_msg["tool_calls"]:
+                            call_id = tool_call["id"]
+                            func_info = tool_call["function"]
+                            func_name = func_info["name"]
                             try:
-                                tool_result = await func(**args)
-                            except TypeError as e:
-                                tool_result = f"错误：参数不合法 - {e}"
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": call_id,
-                            "content": str(tool_result),
-                        })
-                    continue
-                else:
-                    break
+                                args = json.loads(func_info["arguments"] or "{}")
+                            except json.JSONDecodeError:
+                                args = {}
+                            func = tool_map.get(func_name)
+                            if func is None:
+                                tool_result = f"错误：未知工具 {func_name}"
+                            else:
+                                try:
+                                    tool_result = await func(**args)
+                                except TypeError as e:
+                                    tool_result = f"错误：参数不合法 - {e}"
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": call_id,
+                                "content": str(tool_result),
+                            })
+                        continue
+                    else:
+                        break
 
-            # ---- 流式输出最终回答 ----
-            print("AI：", end="", flush=True)
-            answer = await llm_stream_final_answer(messages)
-            messages.append({"role": "assistant", "content": answer})
+                # ---- 流式输出最终回答 ----
+                print("AI：", end="", flush=True)
+                answer = await llm_stream_final_answer(messages)
+                messages.append({"role": "assistant", "content": answer})
 
-            # ---- 安全截断 ----
-            messages = prune(messages, max_tokens=12000, soft_ratio=0.8)
+                # ---- 安全截断 ----
+                messages = prune(messages, max_tokens=12000, soft_ratio=0.8)
 
-        # 关键：捕获 API 错误，打印提示后继续循环，而不是让整个程序崩溃
-        except aiohttp.ClientResponseError as e:
-            print(f"\n[系统] 调用模型出错：HTTP {e.status} {e.message}")
-            print("[系统] 本轮已跳过，你可以重新输入。")
-            messages.pop()          # 撤回本次 user 消息，方便重试
-            continue
+                # ===== 新增：每轮结束自动落盘（静默）=====
+                # 关键：即使你直接点 ✕ 关掉终端窗口、进程被系统杀死，
+                # 最近一轮的对话也已经写入磁盘，重启后能接上，不会丢记忆。
+                autosave(messages)
+
+            # 关键：捕获 API 错误，打印提示后继续循环，而不是让整个程序崩溃
+            except aiohttp.ClientResponseError as e:
+                print(f"\n[系统] 调用模型出错：HTTP {e.status} {e.message}")
+                print("[系统] 本轮已跳过，你可以重新输入。")
+                messages.pop()          # 撤回本次 user 消息，方便重试
+                continue
+            except Exception as e:
+                print(f"\n[系统] 发生意外错误：{e}")
+                messages.pop()
+                continue
+    finally:
+        # ④ 无论怎么退出（exit / Ctrl+C / 异常）都兜底保存一次（含时间戳归档）。
+        #    写读分离：退出时写，启动时由 load_last_session 读回。
+        save_session(messages)
+        print("[系统] 会话已保存到本地。")
+
+        # ===== 新增：会话结束离线抽取 → 更新档案卡（latest-wins 状态复写）=====
+        # 写读分离：这里才会调一次 LLM 抽取事实，不占用户发言轮次的延迟。
+        try:
+            new_facts = await extract_facts(messages, API_KEY, API_URL, MODEL)
+            if new_facts:
+                _, changed = merge_facts(profile, new_facts)
+                save_profile(profile)
+                if changed:
+                    print(f"[系统] 档案卡已更新（新增/覆盖 {changed} 条事实）。")
         except Exception as e:
-            print(f"\n[系统] 发生意外错误：{e}")
-            messages.pop()
-            continue
-
-    # ④ 退出循环后落盘（exit / Ctrl+C break 都会走到这里）。
-    #    写读分离：只在退出时写一次，启动时由 load_last_session 读回。
-    save_session(messages)
-    print("[系统] 会话已保存到本地。")
+            print(f"[系统] 档案卡抽取跳过：{e}")
 
 
 if __name__ == "__main__":

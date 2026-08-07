@@ -30,18 +30,28 @@ def sanitize(messages):
     return out
 
 
-def save_session(messages):
+def autosave(messages):
     """
-    会话结束时调用（写读分离：不在每轮写，只在退出时写一次）。
-    同时写 current.json（供下次续聊）和带时间戳归档（供历史检索）。
+    每轮对话结束后静默调用：只更新 current.json，不写归档。
+    目的——即使你直接点 ✕ 关掉终端窗口、进程被系统杀死，
+    最近一轮的对话也已经落到磁盘，下次启动能接上（不会丢记忆）。
     """
     _ensure_dir()
     clean = sanitize(messages)
     with open(CURRENT_FILE, "w", encoding="utf-8") as f:
         json.dump(clean, f, ensure_ascii=False, indent=2)
+
+
+def save_session(messages):
+    """
+    会话完整结束时（main 的 finally 兜底）调用。
+    更新 current.json（供下次续聊）+ 额外写一份带时间戳归档（供后续 MTM 摘要/检索）。
+    写读分离：写只在退出时做，读只在启动时由 load_last_session 做。
+    """
+    autosave(messages)   # 先更新 current
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     with open(os.path.join(SESSIONS_DIR, f"{ts}.json"), "w", encoding="utf-8") as f:
-        json.dump(clean, f, ensure_ascii=False, indent=2)
+        json.dump(sanitize(messages), f, ensure_ascii=False, indent=2)
 
 
 def load_last_session():

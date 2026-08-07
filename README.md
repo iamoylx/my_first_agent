@@ -11,8 +11,8 @@
 | 层 | 作用 | 存储 | 触发时机 | 机制 | 状态 |
 |----|------|------|----------|------|------|
 | **STM 短期** | 单会话内上下文过长时压缩 | 内存 `messages` | token 达窗口 80% | token 滑动窗口，丢最旧普通消息 | 已实现 |
-| **MTM 中期** | 关掉再开还能接住上次聊了啥 | 本地文件 `memory/sessions/` | 会话结束 / 启动 | 离线摘要，启动时读最近 N 条 | 规划 |
-| **LTM 长期·结构化** | 记住用户稳定事实/偏好 | `memory/profile.json` | 抽取到稳定事实 | 档案卡，**状态复写 latest-wins** | 规划（本项目重点） |
+| **MTM 中期** | 关掉再开还能接住上次聊了啥 | 本地文件 `memory/sessions/` | 会话结束 / 启动 | 完整对话重载（续聊）+ 每轮静默落盘 | 已完成（摘要 Phase 待做） |
+| **LTM 长期·结构化** | 记住用户稳定事实/偏好 | `memory/profile.json` | 会话结束离线抽取 | 档案卡，**状态复写 latest-wins** | 已完成（本项目重点） |
 | **LTM 长期·向量** | 语义召回历史会话（可选） | 向量库 | 当前问题相关时检索 | 仅索引会话摘要，非每条消息 | 可选 Phase 2 |
 
 所有层的产物最终都通过 **system 提示词** 注入给 LLM。
@@ -26,7 +26,9 @@
 ```
 AGENT.py                      # 主程序：Function Calling 主循环 + try/except 容错
 memory/
-└─ token_window.py            # STM：token 滑动窗口 prune()
+├─ token_window.py            # STM：token 滑动窗口 prune()
+├─ sessions.py                # MTM：跨重启续聊（current.json 落盘/读回 + 时间戳归档 + 每轮静默 autosave）
+└─ profile.py                 # LTM 结构化档案卡（profile.json 读写 + latest-wins 合并 + 离线抽取 extract_facts）
 skills/
 ├─ __init__.py                # 技能注册表 collect_tools()
 ├─ basic_tools/               # 内置工具：时间 / 计算器
@@ -39,17 +41,13 @@ skills/
    ├─ schema.py               #   工具描述
    ├─ skill.py                #   主逻辑：校验→请求→重试→降级
    └─ parser.py               #   安全解析 + 清洗（去 HTML/控长度）
+tests/                        # 单元测试（不依赖网络）：test_sessions.py / test_profile.py
 ```
 
-### 规划（后续实现）
+### 规划（剩余项）
 
-```
-memory/
-├─ token_window.py            # STM（已实现）
-├─ profile.py                 # LTM 结构化：profile.json 读写 + 状态复写合并
-├─ sessions.py                # MTM：会话摘要落盘 + 读最近 N 条
-└─ extract.py                 # 离线：会话结束→抽事实入 profile + 生成摘要入 sessions
-```
+- **MTM 摘要 Phase**：`sessions.py` 已实现「完整对话续聊」，后续可加「会话摘要」模式（压缩后存档，启动时检索注入，而非整段重载）。
+- **LTM 向量库（可选 Phase 2）**：仅索引会话摘要的语义召回，非每条消息 embedding。
 
 ---
 
@@ -112,6 +110,12 @@ cd "D:\document\Myprojects\学习\AGENT"
 python AGENT.py
 ```
 
+**档案卡（LTM）行为**：
+- 启动时若 `memory/profile.json` 已有内容，会打印 `[系统] 已载入用户档案卡（LTM）。`，并把档案随 system 提示词常驻注入。
+- 每次退出（exit / Ctrl+C / 关终端被杀）时，agent 在 `finally` 里**离线抽取**本轮对话中的稳定事实，自动写入 `profile.json`（latest-wins 合并）。
+- 下次启动 agent 便"记得"你是谁（如姓名、城市、学习目标）。
+- 直接编辑 `profile.json` 也可手动维护档案。
+
 ---
 
 ## 七、开发路线
@@ -119,13 +123,14 @@ python AGENT.py
 | 阶段 | 内容 | 状态 |
 |------|------|------|
 | 1 | STM：token 滑动窗口 `prune()` | 已完成 |
-| 2 | LTM 结构化档案卡 `profile.py`（含状态复写） | 待做（建议下一步） |
-| 3 | MTM 会话摘要 `sessions.py` | 待做 |
-| 4 | LTM 向量库（仅索引摘要，可选 Phase 2） | 可选 |
+| 2 | LTM 结构化档案卡 `profile.py`（含状态复写 latest-wins + 离线抽取） | 已完成 |
+| 3 | MTM 跨重启续聊 `sessions.py`（落盘/读回 + 每轮 autosave） | 已完成 |
+| 4 | MTM 会话摘要 / LTM 向量库（仅索引摘要，可选 Phase 2） | 可选 |
 
 ---
 
-## 八、已知技术债务
+## 八、已知技术债务 / 待优化
 
-- `AGENT.py` 中 `safe_trim()`（约 84–103 行）为**死代码**：其调用点早已替换为 `prune()`，
-  函数本身仍保留，待删除。
+- `memory/sessions.py` 目前是「完整对话续聊」模式，尚未做「会话摘要」压缩；长会话会随轮次累积，靠 `prune()` 控制窗口。
+- `extract_facts` 每次退出都重发完整 `messages` 给模型抽取（latest-wins 幂等，但略费 token）；后续可只抽「本次新增轮次」以优化。
+- `safe_trim()` 此前被记为死代码，经核查 `AGENT.py` 中已不存在，本条作废。
