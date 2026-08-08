@@ -11,6 +11,7 @@ mem = MemoryStore(user_id=os.getenv("AGENT_USER_ID", "default"))
 from skills import collect_tools
 from skills.web_search import TOOLS as ws_tools, TOOL_MAP as ws_map
 from skills.basic_tools import TOOLS as bt_tools, TOOL_MAP as bt_map
+from skills.code_tools import TOOLS as ct_tools, TOOL_MAP as ct_map
 
 # ============ 新增：引入终端命令分发（检索/跨会话操作，不进 LLM 循环）============
 from commands import is_command, run_command
@@ -25,7 +26,7 @@ if not API_KEY:
     raise RuntimeError("缺少环境变量 DEEPSEEK_API_KEY，请在运行前配置。")
 
 # ============ 改动：tools/tool_map 改为自动聚合，不再手写 ============
-tools, tool_map = collect_tools((ws_tools, ws_map), (bt_tools, bt_map))
+tools, tool_map = collect_tools((ws_tools, ws_map), (bt_tools, bt_map), (ct_tools, ct_map))
 
 # ===================== 1. 非流式：检测是否调用工具 =====================
 async def llm_detect_tool_call(messages: list):

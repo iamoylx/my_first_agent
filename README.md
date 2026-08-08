@@ -42,13 +42,17 @@ skills/
 │  ├─ __init__.py             #   对外暴露 TOOLS + TOOL_MAP
 │  ├─ schema.py               #   给 LLM 看的工具描述
 │  └─ skill.py                #   工具实现
-└─ web_search/                # 联网搜索技能（需 TAVILY_API_KEY）
+├─ web_search/                # 联网搜索技能（需 TAVILY_API_KEY）
+│  ├─ __init__.py             #   对外暴露 TOOLS + TOOL_MAP
+│  ├─ config.py               #   地址/超时/上限/Key（写死安全参数）
+│  ├─ schema.py               #   工具描述
+│  ├─ skill.py                #   主逻辑：校验→请求→重试→降级
+│  └─ parser.py               #   安全解析 + 清洗（去 HTML/控长度）
+└─ code_tools/                # 本地代码/命令技能：看自己文件夹代码 + 命令行简单操作
    ├─ __init__.py             #   对外暴露 TOOLS + TOOL_MAP
-   ├─ config.py               #   地址/超时/上限/Key（写死安全参数）
-   ├─ schema.py               #   工具描述
-   ├─ skill.py                #   主逻辑：校验→请求→重试→降级
-   └─ parser.py               #   安全解析 + 清洗（去 HTML/控长度）
-tests/                        # 单元测试（不依赖网络）：test_sessions.py / test_profile.py / test_store.py / test_commands.py / test_p2.py / test_p3.py
+   ├─ schema.py               #   工具描述（5 个工具）
+   └─ skill.py                #   读文件 / 列目录 / 搜文件 / 搜内容 / 执行命令
+tests/                        # 单元测试（不依赖网络）：test_sessions.py / test_profile.py / test_store.py / test_commands.py / test_p2.py / test_p3.py / test_code_tools.py
 ```
 
 ### 规划（剩余项）
@@ -123,6 +127,28 @@ mem = MemoryStore(user_id=os.getenv("AGENT_USER_ID", "default"))  # 默认 defau
 > 需要「接着上次聊」请用 `/load` 显式载入；命令名支持带斜杠（推荐）或裸词（如直接输入 `sessions`）。
 > `/summary --llm` 生成的压缩摘要会在 `/load` 该会话时自动注入为上下文锚点，长会话续聊不必整段重载。
 > **启动自动注入**：若上一段会话曾用 `/summary --llm` 生成过摘要，重启 agent 时会自动把【最近一份】摘要作为上下文锚点注入（无需手动 `/load`），实现跨会话连续性；无摘要则不注入。
+
+---
+
+## 二之三、工具技能 code_tools（看自己文件夹代码 + 命令行操作）
+
+`skills/code_tools/` 让 agent 能直接审视**自己所在项目**的代码，并用命令行做简单操作。
+同样遵循「自包含 + 注册即生效」模式：主循环分发逻辑零改动，仅在 `collect_tools` 加一对即可。
+
+| 工具 | 作用 | 安全级别 |
+|------|------|----------|
+| `read_file(path, max_lines, start_line)` | 读取项目内文件内容（带行号标记），看源码/配置 | 只读 |
+| `list_dir(path)` | 列出目录结构，确认文件布局 | 只读 |
+| `search_files(name_pattern, path)` | 按文件名/通配符（如 `*.py`）查文件 | 只读 |
+| `search_content(keyword, path, max_matches)` | 在文件内容中搜关键词/正则（类 grep），定位函数定义、变量引用 | 只读 |
+| `run_command(command, timeout)` | 在 agent 运行目录执行 shell 命令并返回输出 | 受 `_DENY` 拦截 |
+
+**安全边界（务必知悉）**：
+- `run_command` **不是沙箱**，直接在 agent 进程的工作目录执行命令。内置 `_DENY` 正则拦截递归删除（`rm -rf`）、格式化（`format`/`mkfs`）、关机/重启、提权（`sudo`）、下载即执行（`curl|sh`）、fork bomb 等危险指令；命中即拒绝并返回提示。
+- 这是**基础防护**，不是完整沙箱：仍可能执行有副作用的命令（如 `git push`、`pip install`、删除单文件）。要放开/收紧拦截，改 `skills/code_tools/skill.py` 的 `_DENY` 列表即可。
+- 文件类工具相对路径按**项目根目录**解析；传入绝对路径则可访问任意位置（含系统目录），请按需在受信任环境使用。
+
+> 设计取舍：文件浏览/搜索做成「只读、带目录跳过（.git/__pycache__ 等）」，避免把无关噪音喂给模型；命令执行则显式拦截高危操作，其余交给用户在可信任环境下授权。
 
 ---
 
@@ -208,6 +234,7 @@ python AGENT.py
 | 3.6 | 终端命令 `commands.py`：`/recall /load /sessions /profile /summary /forget /help` | 已完成 |
 | 3.7 | P2 增量抽取（只发新增轮次省 token）+ LLM 会话摘要 `/summary --llm`（压缩存档，`/load` 注入锚点） | 已完成 |
 | 3.8 | P3① 启动自动注入最近会话摘要锚点；② `/cleanup [天数]` 命令（显式过期清理） | 已完成 |
+| 3.9 | 工具技能 `code_tools`：read_file / list_dir / search_files / search_content / run_command（含危险指令拦截） | 已完成 |
 | 4 | LTM 向量库（仅索引摘要，可选 Phase 2） | 可选 |
 
 ---
