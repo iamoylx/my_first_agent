@@ -14,17 +14,20 @@ from datetime import datetime
 
 PROFILE_FILE = os.path.join(os.path.dirname(__file__), "profile.json")
 
-# 抽取提示词：只抽高信号、稳定的用户事实，明确禁止编造/猜测。
+# 抽取提示词：抽两类高信号、稳定的用户记忆——事实 + 偏好/意图，明确禁止编造/猜测。
 EXTRACT_PROMPT = (
-    "你是记忆抽取器。请从下面的对话中提取关于【用户】的"
-    "稳定、客观事实（如：姓名、所在城市、职业、语言偏好、"
-    "正在做的项目/学习目标、长期偏好）。\n"
+    "你是记忆抽取器。请从下面的对话中提取关于【用户】的以下内容：\n"
+    "A) 稳定客观事实：姓名、所在城市、职业、语言、正在做的项目/学习目标等；\n"
+    "B) 偏好与意图：对回答风格的要求（简洁/详细/带代码示例）、对技术的倾向、"
+    "明确表达的不满或要求、长期习惯等。\n"
     "规则：\n"
-    "1) 只提取对话中明确说出的事实，禁止猜测或推断；\n"
-    "2) 对每条事实给出 confidence（0~1），不确定就别提；\n"
-    "3) 返回 JSON，格式："
-    '{"facts":[{"key":"name","value":"小明","confidence":0.95}]}；'
-    "若没有可提取的事实，返回 {\"facts\":[]}。\n"
+    "1) 只提取对话中明确说出的内容，禁止猜测或推断；\n"
+    "2) 对每条给出 confidence（0~1），不确定就别提；\n"
+    "3) 每条用 type 标注：事实填 \"fact\"，偏好/意图填 \"preference\"；\n"
+    "4) 返回 JSON，格式："
+    '{"facts":[{"key":"name","value":"小明","confidence":0.95,"type":"fact"},'
+    '{"key":"pref_answer_style","value":"要简洁、少废话","confidence":0.8,"type":"preference"}]}；'
+    "若没有可提取的内容，返回 {\"facts\":[]}。\n"
     "只返回 JSON，不要额外文字。"
 )
 
@@ -55,11 +58,11 @@ def save_profile(profile):
 def merge_facts(profile, extracted):
     """
     核心：latest-wins 状态复写。
-    extracted: [{"key","value","confidence"}, ...]
+    extracted: [{"key","value","confidence","type"}, ...]，type ∈ {fact, preference}
     规则：
       - 新 key 直接写入；
       - 已有 key：仅当 new_conf >= old_conf 才覆盖（即禁止低置信度覆盖已存事实）；
-      - 每次更新记录 updated_at。
+      - 每条记录 type（事实/偏好）与 updated_at，供展示与注入区分。
     返回 (profile, changed) —— changed 是本次实际变更的条数。
     """
     facts = profile.setdefault("facts", {})
@@ -69,27 +72,32 @@ def merge_facts(profile, extracted):
         key = item.get("key")
         value = item.get("value")
         conf = float(item.get("confidence", 1.0))
+        ftype = item.get("type", "fact")
         if not key or value is None:
             continue
         old = facts.get(key)
         if old is None:
             # 全新事实，直接写入
-            facts[key] = {"value": value, "confidence": conf, "updated_at": now}
+            facts[key] = {"value": value, "confidence": conf, "type": ftype, "updated_at": now}
             changed += 1
         elif conf >= float(old.get("confidence", 0)):
-            # latest-wins：新值置信度不低于旧值 → 覆盖
-            facts[key] = {"value": value, "confidence": conf, "updated_at": now}
+            # latest-wins：新值置信度不低于旧值 → 覆盖（含 type 更新）
+            facts[key] = {"value": value, "confidence": conf, "type": ftype, "updated_at": now}
             changed += 1
         # 否则：新值置信度更低，保留旧值，跳过（防低置信度覆盖）
     return profile, changed
 
 
 def to_context_text(profile, max_chars=600):
-    """把档案渲染成紧凑文本，注入 system 提示词。超长截断以保上下文预算。"""
+    """把档案渲染成紧凑文本，注入 system 提示词。事实与偏好分列，超长截断以保上下文预算。"""
     facts = profile.get("facts", {})
     if not facts:
         return ""
-    lines = [f"- {k}: {v['value']}" for k, v in facts.items()]
+    lines = []
+    for k, v in facts.items():
+        # 偏好显式标注，使模型知道这是"应遵守的倾向"而非客观事实
+        tag = "偏好" if v.get("type") == "preference" else "事实"
+        lines.append(f"- [{tag}] {k}: {v['value']}")
     text = "\n".join(lines)
     if len(text) > max_chars:
         text = text[:max_chars] + "\n- ...(更多略)"

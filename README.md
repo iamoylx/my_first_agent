@@ -12,7 +12,7 @@
 |----|------|------|----------|------|------|
 | **STM 短期** | 单会话内上下文过长时压缩 | 内存 `messages` | token 达窗口 80% | token 滑动窗口，丢最旧普通消息 | 已实现 |
 | **MTM 中期** | 关掉再开还能接住上次聊了啥 | `memory/users/<id>/sessions/` | 会话结束 / 启动 | 完整对话重载（续聊）+ 每轮静默落盘 | 已完成（摘要 Phase 待做） |
-| **LTM 长期·结构化** | 记住用户稳定事实/偏好 | `memory/users/<id>/profile.json` | 会话结束离线抽取 | 档案卡，**状态复写 latest-wins** | 已完成（本项目重点） |
+| **LTM 长期·结构化** | 记住用户稳定事实/偏好 | `memory/users/<id>/profile.json` | 会话结束离线抽取 | 档案卡，**状态复写 latest-wins**；偏好标注 type=preference 并注入 system 调整回答 | 已完成（本项目重点） |
 | **LTM 长期·向量** | 语义召回历史会话（可选） | 向量库 | 当前问题相关时检索 | 仅索引会话摘要，非每条消息 | 可选 Phase 2 |
 
 三层由 **统一记忆层 `memory/store.py`（MemoryStore）** 封装，对外提供一致的

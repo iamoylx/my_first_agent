@@ -119,7 +119,8 @@ def _print_profile(mem):
         val = v.get("value", "")
         conf = v.get("confidence", "")
         upd = v.get("updated_at", "")
-        print(f"  · {k}: {val}  (置信 {conf}, 更新 {upd})")
+        ftype = "偏好" if v.get("type") == "preference" else "事实"
+        print(f"  · [{ftype}] {k}: {val}  (置信 {conf}, 更新 {upd})")
 
 
 def _print_recall(mem, keyword):
@@ -130,7 +131,8 @@ def _print_recall(mem, keyword):
     if ph:
         print("── 档案卡(LTM) ──")
         for k, v in ph.items():
-            print(f"  · {k}: {v.get('value')}  (置信 {v.get('confidence')})")
+            ftype = "偏好" if v.get("type") == "preference" else "事实"
+            print(f"  · [{ftype}] {k}: {v.get('value')}  (置信 {v.get('confidence')})")
     if sh:
         print("── 历史会话(MTM) ──")
         for h in sh:
