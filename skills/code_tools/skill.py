@@ -49,6 +49,33 @@ def _check_blocked(cmd: str):
     return None
 
 
+# ---- 输出清洗：消除“聊到代码/本体程序就乱码”的源头 ----
+# Windows 下 shell/命令输出常带 ANSI 转义（彩色）与 OEM 编码控制字符，
+# 直接塞进上下文会让模型复述成乱码；这里统一清除并做编码兜底。
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][AB0-1]")
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")   # 保留 \n \r \t
+
+
+def _sanitize(text: str) -> str:
+    """去除 ANSI 转义与不可打印控制字符，折叠多余空行。中文与正常换行不受影响。"""
+    if not text:
+        return text
+    text = _ANSI_RE.sub("", text)
+    text = _CTRL_RE.sub("", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _decode(raw: bytes) -> str:
+    """多编码兜底解码（Windows 控制台常为 GBK/cp936），最终失败用 replace 不崩。"""
+    for enc in ("utf-8", "cp936", "gbk", "latin-1"):
+        try:
+            return raw.decode(enc)
+        except Exception:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 async def read_file(path: str, max_lines: int = 200, start_line: int = 1) -> str:
     """读取项目内文件内容，用于查看源码/配置。返回带行号范围标记的文本。"""
     if not path:
@@ -68,8 +95,10 @@ async def read_file(path: str, max_lines: int = 200, start_line: int = 1) -> str
     start = max(1, int(start_line))
     end = min(total, start + int(max_lines) - 1)
     snippet = "".join(lines[start - 1:end])
+    if len(snippet) > 4000:
+        snippet = snippet[:4000] + "\n...(内容过长，仅显示前 4000 字符)"
     meta = f"[文件 {path}：共 {total} 行，显示第 {start}-{end} 行]\n"
-    return meta + snippet
+    return _sanitize(meta + snippet)
 
 
 async def list_dir(path: str = ".") -> str:
@@ -82,7 +111,7 @@ async def list_dir(path: str = ".") -> str:
         full = os.path.join(root, name)
         entries.append({"name": name, "type": "dir" if os.path.isdir(full) else "file"})
     rel = os.path.relpath(root, PROJECT_ROOT) or "."
-    return json.dumps({"path": rel, "entries": entries}, ensure_ascii=False, indent=2)
+    return _sanitize(json.dumps({"path": rel, "entries": entries}, ensure_ascii=False, indent=2))
 
 
 async def search_files(name_pattern: str, path: str = ".") -> str:
@@ -103,8 +132,8 @@ async def search_files(name_pattern: str, path: str = ".") -> str:
                     found.append(os.path.join(dirpath, fn))
     found = sorted(os.path.relpath(f, PROJECT_ROOT) for f in found)
     if not found:
-        return json.dumps({"message": f"未找到匹配 {name_pattern!r} 的文件"}, ensure_ascii=False)
-    return json.dumps({"files": found, "count": len(found)}, ensure_ascii=False, indent=2)
+        return _sanitize(json.dumps({"message": f"未找到匹配 {name_pattern!r} 的文件"}, ensure_ascii=False))
+    return _sanitize(json.dumps({"files": found, "count": len(found)}, ensure_ascii=False, indent=2))
 
 
 async def search_content(keyword: str, path: str = ".", max_matches: int = 50) -> str:
@@ -143,8 +172,11 @@ async def search_content(keyword: str, path: str = ".", max_matches: int = 50) -
             except (OSError, UnicodeDecodeError):
                 continue
     if not results:
-        return json.dumps({"message": f"未找到匹配 {keyword!r} 的内容"}, ensure_ascii=False)
-    return json.dumps({"matches": results, "count": len(results)}, ensure_ascii=False, indent=2)
+        return _sanitize(json.dumps({"message": f"未找到匹配 {keyword!r} 的内容"}, ensure_ascii=False))
+    text = json.dumps({"matches": results, "count": len(results)}, ensure_ascii=False, indent=2)
+    if len(text) > 2500:
+        text = text[:2500] + "\n...(匹配过多，仅显示前 2500 字符)"
+    return _sanitize(text)
 
 
 async def run_command(command: str, timeout: int = 30) -> str:
@@ -171,9 +203,10 @@ async def run_command(command: str, timeout: int = 30) -> str:
             proc.kill()
             await proc.wait()
             return json.dumps({"error": f"命令超时（>{timeout}s）已被强制结束"}, ensure_ascii=False)
-        text = out.decode("utf-8", errors="replace")
-        if len(text) > 4000:
-            text = "...(输出过长，仅显示末尾 4000 字符)\n" + text[-4000:]
+        text = _decode(out)
+        text = _sanitize(text)
+        if len(text) > 2000:
+            text = "...(输出过长，仅显示末尾 2000 字符)\n" + text[-2000:]
         return json.dumps(
             {"command": command, "returncode": proc.returncode, "output": text},
             ensure_ascii=False, indent=2,

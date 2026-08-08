@@ -6,7 +6,7 @@ TOOL_SCHEMA_READ_FILE = {
     "type": "function",
     "function": {
         "name": "read_file",
-        "description": "读取 agent 所在项目内某个代码/文本文件的内容，用于查看源码或配置。默认相对项目根目录解析路径；返回带行号范围标记的文本。大文件可分次读取。",
+        "description": "读取 agent 所在项目内某个代码/文本文件的内容，用于查看源码或配置。默认相对项目根目录解析路径；返回带行号范围标记的文本。大文件可分次读取。返回内容已去除控制字符并限制长度（避免污染上下文导致乱码）。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -71,7 +71,7 @@ TOOL_SCHEMA_RUN_CMD = {
     "type": "function",
     "function": {
         "name": "run_command",
-        "description": "在 agent 运行目录执行一条命令行指令并返回输出，用于简单操作电脑（如查看环境、运行脚本、git 状态、编译）。内置危险指令拦截（递归删除/格式化/关机/提权等），非沙箱，请谨慎使用。",
+        "description": "在 agent 运行目录执行一条命令行指令并返回输出，用于简单操作电脑（如查看环境、运行脚本、git 状态、编译）。内置危险指令拦截（递归删除/格式化/关机/提权等），非沙箱，请谨慎使用。返回内容已做清洗（去除终端控制字符/彩色转义、按 GBK/UTF-8 兜底解码）与长度限制（≤2000 字符），避免污染上下文导致乱码。",
         "parameters": {
             "type": "object",
             "properties": {

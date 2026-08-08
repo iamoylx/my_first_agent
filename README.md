@@ -12,7 +12,7 @@
 |----|------|------|----------|------|------|
 | **STM 短期** | 单会话内上下文过长时压缩 | 内存 `messages` | token 达窗口 80% | token 滑动窗口，丢最旧普通消息 | 已实现 |
 | **MTM 中期** | 关掉再开还能接住上次聊了啥 | `memory/users/<id>/sessions/` | 会话结束 / 启动 | 完整对话重载（续聊）+ 每轮静默落盘 | 已完成（摘要 Phase 待做） |
-| **LTM 长期·结构化** | 记住用户稳定事实/偏好 | `memory/users/<id>/profile.json` | 会话结束离线抽取 | 档案卡，**状态复写 latest-wins**；偏好标注 type=preference 并注入 system 调整回答 | 已完成（本项目重点） |
+| **LTM 长期·结构化** | 记住用户稳定事实/偏好 | `memory/users/<id>/profile.json` | 会话结束离线抽取 | 档案卡，**状态复写 latest-wins**；偏好标注 type=preference 并注入 system 调整回答；**渲染按 `updated_at` 倒序（最新优先），且对身份/角色/风格类事实常驻保护（不被预算截断）** | 已完成（本项目重点） |
 | **LTM 长期·向量** | 语义召回历史会话（可选） | 向量库 | 当前问题相关时检索 | 仅索引会话摘要，非每条消息 | 可选 Phase 2 |
 
 三层由 **统一记忆层 `memory/store.py`（MemoryStore）** 封装，对外提供一致的
@@ -52,7 +52,7 @@ skills/
    ├─ __init__.py             #   对外暴露 TOOLS + TOOL_MAP
    ├─ schema.py               #   工具描述（5 个工具）
    └─ skill.py                #   读文件 / 列目录 / 搜文件 / 搜内容 / 执行命令
-tests/                        # 单元测试（不依赖网络）：test_sessions.py / test_profile.py / test_store.py / test_commands.py / test_p2.py / test_p3.py / test_code_tools.py
+tests/                        # 单元测试（不依赖网络）：test_sessions.py / test_profile.py / test_store.py / test_commands.py / test_p2.py / test_p3.py / test_code_tools.py / test_memory_noloss.py
 ```
 
 ### 规划（剩余项）
@@ -149,6 +149,28 @@ mem = MemoryStore(user_id=os.getenv("AGENT_USER_ID", "default"))  # 默认 defau
 - 文件类工具相对路径按**项目根目录**解析；传入绝对路径则可访问任意位置（含系统目录），请按需在受信任环境使用。
 
 > 设计取舍：文件浏览/搜索做成「只读、带目录跳过（.git/__pycache__ 等）」，避免把无关噪音喂给模型；命令执行则显式拦截高危操作，其余交给用户在可信任环境下授权。
+> **输出清洗（防乱码）**：`read_file`/`search_content`/`run_command` 的返回统一经 `_sanitize` 去除 ANSI 转义与不可打印控制字符、经 `_decode` 按 `utf-8→cp936(GBK)→latin-1` 兜底解码，并限制长度（文件≤4000、搜索≤2500、命令≤2000 字符）。这是「聊到代码/本体程序就输出一段乱码」的根因修复——Windows 终端的彩色/GBK 输出若原样进上下文，模型会复述成乱码并连带丢失风格。
+
+---
+
+## 二之四、记忆正确性保障（严格体检后修正）
+
+针对「停留在昨天 / 偶丢风格 / 聊代码乱码」三个症状，做了根因修复。**本次仅改渲染·注入·清洗逻辑，未读写任何 profile 文件，现有记录零丢失**（附 `tests/test_memory_noloss.py` 只读校验）。
+
+1. **今天的事被丢（根因：截断方向反了）**
+   旧 `to_context_text` 按字典插入顺序（旧的在前）拼接后取 `text[:max_chars]`，导致**最新的（今天）事实在字典末尾、最先被切掉**。
+   修复：普通事实按 `updated_at` **倒序（最新在前）**，预算只约束普通事实层；旧事实才可能被切掉。
+
+2. **角色/风格偶丢（根因：核心事实未被保护）**
+   `agent_role`/`agent_style`/`agent_name` 等早期写入的**没有 `type` 字段**，被当普通事实参与截断。
+   修复：渲染时识别「核心人格事实」——`type∈{preference,role}` **或** key 含 `role/style/name/pref` 等，永远**置顶且不被预算截断**；极小预算下仍完整保留。
+
+3. **停留在昨天（根因：上下文里没有“今天”）**
+   系统提示词原本不含日期，agent 不知道已是新的一天；恢复的上次会话也无跨天提示。
+   修复：启动即在 system 注入「当前时间：YYYY年MM月DD日 HH:MM（周X）」；若恢复的会话来自**上一天**，额外注入跨天提示，要求按当前时间理解。
+
+4. **聊代码乱码 + 与风格丢失常同时发生（根因：工具返回值脏字符）**
+   见上「输出清洗」——工具输出清洗后，脏字符不再污染上下文，模型既不会复述乱码，也不会被冲散风格。
 
 ---
 
@@ -235,6 +257,7 @@ python AGENT.py
 | 3.7 | P2 增量抽取（只发新增轮次省 token）+ LLM 会话摘要 `/summary --llm`（压缩存档，`/load` 注入锚点） | 已完成 |
 | 3.8 | P3① 启动自动注入最近会话摘要锚点；② `/cleanup [天数]` 命令（显式过期清理） | 已完成 |
 | 3.9 | 工具技能 `code_tools`：read_file / list_dir / search_files / search_content / run_command（含危险指令拦截） | 已完成 |
+| 3.10 | 记忆正确性修复：渲染 recency 倒序 + 核心人格常驻保护 + system 注入当前日期/跨天提示 + 工具输出清洗（去 ANSI/控制字符、GBK 兜底解码、限长），消除“停留在昨天/丢风格/聊代码乱码” | 已完成 |
 | 4 | LTM 向量库（仅索引摘要，可选 Phase 2） | 可选 |
 
 ---

@@ -2,6 +2,7 @@ import asyncio
 import aiohttp
 import json
 import os
+from datetime import datetime
 # ============ 统一记忆层：STM/MTM/LTM 一体，支持 user/session 维度隔离 ============
 from memory.store import MemoryStore, format_summary_anchor
 # user_id 可经环境变量 AGENT_USER_ID 切换，实现多用户记忆隔离；默认 default。
@@ -69,7 +70,7 @@ async def llm_stream_final_answer(messages: list) -> str:
                                 data=json.dumps(payload).encode("utf-8")) as resp:
             resp.raise_for_status()
             async for raw_line in resp.content:
-                line = raw_line.decode("utf-8").strip()
+                line = raw_line.decode("utf-8", errors="replace").strip()
                 if not line:
                     continue
                 if line.startswith("data: "):
@@ -100,9 +101,19 @@ async def main():
     # ===== 新增：载入 LTM 用户档案卡，渲染进 system 提示词（latest-wins 已落盘）=====
     profile = mem.load_profile()
     profile_text = mem.profile_context()
-    system_content = "你是助手，可以调用工具查询时间、计算、联网搜索。"
+    # ===== 修复“停留在昨天”：把“当前日期/时间”钉进系统提示词，agent 才能判断今天 =====
+    weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    now = datetime.now()
+    date_line = (f"当前时间：{now.year}年{now.month}月{now.day}日 "
+                 f"{now.hour:02d}:{now.minute:02d}（{weekdays[now.weekday()]}）")
+    system_content = "你是助手，可以调用工具查询时间、计算、联网搜索。\n" + date_line
     if profile_text:
-        system_content += "\n\n[用户档案]\n" + profile_text   # 常驻注入，≤上下文预算
+        system_content += "\n\n[用户档案]\n" + profile_text   # 常驻注入，核心人格永不截断
+    # 若恢复的会话是“上一天”的，显式提醒，避免 agent 把旧对话当此刻发生
+    last_sess_date = mem.get_last_session_date()
+    if last_sess_date and last_sess_date < now.date():
+        system_content += (f"\n\n（注：下方恢复的对话来自 {last_sess_date.isoformat()}，"
+                           f"与今天不是同一天，请按当前时间理解上下文。）")
     system_msg = {"role": "system", "content": system_content}
     messages = [system_msg]
 

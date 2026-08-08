@@ -88,19 +88,67 @@ def merge_facts(profile, extracted):
     return profile, changed
 
 
-def to_context_text(profile, max_chars=600):
-    """把档案渲染成紧凑文本，注入 system 提示词。事实与偏好分列，超长截断以保上下文预算。"""
+# 核心事实：定义 agent 人格/身份/语言风格，永远保留、绝不因上下文预算被截断。
+# 既识别显式 type，也用 key 兜底（早期档案的 agent_role/agent_style 无 type 字段）。
+_CORE_TYPES = {"preference", "role"}
+_CORE_KEY_HINTS = ("role", "style", "persona", "name", "nickname", "pref",
+                   "answer_style", "affection", "address")
+
+
+def _is_core(key: str, v: dict) -> bool:
+    if v.get("type") in _CORE_TYPES:
+        return True
+    k = (key or "").lower()
+    return any(h in k for h in _CORE_KEY_HINTS)
+
+
+def _fact_line(k: str, v: dict) -> str:
+    t = v.get("type")
+    tag = "偏好" if t == "preference" else ("角色" if t == "role" else "事实")
+    return f"- [{tag}] {k}: {v['value']}"
+
+
+def _fact_ts(item) -> "datetime":
+    try:
+        return datetime.fromisoformat(item[1].get("updated_at", ""))
+    except Exception:
+        return datetime.min
+
+
+def to_context_text(profile, max_chars=2000):
+    """
+    把档案渲染成紧凑文本，注入 system 提示词。
+
+    关键修正（修复“停留在昨天 / 丢失风格”两个根因）：
+      1) 分两层：核心事实（身份/角色/风格/偏好）永远置顶且【不被预算截断】；
+         普通事实按 updated_at 倒序（最新在前），保证“今天/近期”优先，
+         旧事实才可能被预算切掉——截断方向从“丢最新的”改为“丢最旧的”。
+      2) 纯渲染逻辑，不读写任何存储文件，现有记录零丢失。
+    """
     facts = profile.get("facts", {})
     if not facts:
         return ""
-    lines = []
+    core, regular = [], []
     for k, v in facts.items():
-        # 偏好显式标注，使模型知道这是"应遵守的倾向"而非客观事实
-        tag = "偏好" if v.get("type") == "preference" else "事实"
-        lines.append(f"- [{tag}] {k}: {v['value']}")
-    text = "\n".join(lines)
-    if len(text) > max_chars:
-        text = text[:max_chars] + "\n- ...(更多略)"
+        (core if _is_core(k, v) else regular).append((k, v))
+
+    # 核心：完整保留，置顶
+    core_lines = [_fact_line(k, v) for k, v in core]
+
+    # 普通：最新在前
+    regular.sort(key=_fact_ts, reverse=True)
+    reg_lines = [_fact_line(k, v) for k, v in regular]
+
+    text = "\n".join(core_lines)
+    # 预算只约束“普通事实”层；核心人格块哪怕超长也绝不截断
+    remaining = max_chars - len(text) - 2
+    for line in reg_lines:
+        if remaining <= 0:
+            break
+        if len(line) > remaining:
+            break  # 这条放不下就停，避免半句
+        text += "\n" + line
+        remaining -= len(line) + 1
     return text
 
 

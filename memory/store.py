@@ -113,7 +113,7 @@ class MemoryStore:
             if kw in k.lower() or kw in str(v.get("value", "")).lower()
         }
 
-    def profile_context(self, max_chars: int = 600) -> str:
+    def profile_context(self, max_chars: int = 2000) -> str:
         """读取接口·渲染档案卡为注入 system 提示词的紧凑文本。"""
         return to_context_text(self.load_profile(), max_chars=max_chars)
 
@@ -133,6 +133,16 @@ class MemoryStore:
         if os.path.exists(legacy):
             return self._read_json(legacy, [])
         return []
+
+    def get_last_session_date(self) -> object:
+        """
+        读取接口·返回上次会话文件(current.json)的修改日期(date)，无则 None。
+        供主流程判断“恢复的会话是不是上一天的”，从而决定是否注入跨天提示。
+        """
+        cur = self._session_path("current")
+        if os.path.exists(cur):
+            return datetime.fromtimestamp(os.path.getmtime(cur)).date()
+        return None
 
     def autosave(self, messages: list):
         """写入接口·每轮静默落盘 current.json（不写归档）。"""
