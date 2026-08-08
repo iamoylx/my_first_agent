@@ -13,6 +13,11 @@ from skills import collect_tools
 from skills.web_search import TOOLS as ws_tools, TOOL_MAP as ws_map
 from skills.basic_tools import TOOLS as bt_tools, TOOL_MAP as bt_map
 from skills.code_tools import TOOLS as ct_tools, TOOL_MAP as ct_map
+# 女儿陪伴角色技能：注入人格设定 + 5 个陪伴工具（情绪识别/记重要/回想/关心开场/引导分享）
+from skills.daughter_role import (TOOLS as dr_tools, TOOL_MAP as dr_map,
+                                  PERSONA_PROMPT, recent_notes_text)
+# 角色开关：默认开启；设 DAUGHTER_ROLE=0 可关闭女儿人格（退回通用助手）
+ENABLE_DAUGHTER = os.getenv("DAUGHTER_ROLE", "1") != "0"
 
 # ============ 新增：引入终端命令分发（检索/跨会话操作，不进 LLM 循环）============
 from commands import is_command, run_command
@@ -27,7 +32,8 @@ if not API_KEY:
     raise RuntimeError("缺少环境变量 DEEPSEEK_API_KEY，请在运行前配置。")
 
 # ============ 改动：tools/tool_map 改为自动聚合，不再手写 ============
-tools, tool_map = collect_tools((ws_tools, ws_map), (bt_tools, bt_map), (ct_tools, ct_map))
+tools, tool_map = collect_tools((ws_tools, ws_map), (bt_tools, bt_map),
+                                (ct_tools, ct_map), (dr_tools, dr_map))
 
 # ===================== 1. 非流式：检测是否调用工具 =====================
 async def llm_detect_tool_call(messages: list):
@@ -106,9 +112,16 @@ async def main():
     now = datetime.now()
     date_line = (f"当前时间：{now.year}年{now.month}月{now.day}日 "
                  f"{now.hour:02d}:{now.minute:02d}（{weekdays[now.weekday()]}）")
-    system_content = "你是助手，可以调用工具查询时间、计算、联网搜索。\n" + date_line
+    system_content = ("你是一个 AI 助手，可以调用工具查询时间、计算、联网搜索、查看项目代码。"
+                      "\n" + date_line)
     if profile_text:
         system_content += "\n\n[用户档案]\n" + profile_text   # 常驻注入，核心人格永不截断
+    # 注入“女儿”陪伴角色人格（确立女儿角色 + 五类陪伴能力 + 回应边界），并提示已记住的重要人/事
+    if ENABLE_DAUGHTER:
+        system_content += "\n\n" + PERSONA_PROMPT
+        notes_txt = recent_notes_text()
+        if notes_txt:
+            system_content += "\n\n[我记得的你的重要事]\n" + notes_txt
     # 若恢复的会话是“上一天”的，显式提醒，避免 agent 把旧对话当此刻发生
     last_sess_date = mem.get_last_session_date()
     if last_sess_date and last_sess_date < now.date():

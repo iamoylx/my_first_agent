@@ -36,6 +36,7 @@ memory/
 # 运行时生成的隔离目录（已被 .gitignore 排除，不进仓库）：
 # memory/users/<user_id>/profile.json
 # memory/users/<user_id>/sessions/{current,<时间戳>}.json
+# memory/users/<user_id>/notes.json       # daughter_role 记住的重要人/事（episodic，本地）
 skills/
 ├─ __init__.py                # 技能注册表 collect_tools()
 ├─ basic_tools/               # 内置工具：时间 / 计算器
@@ -52,7 +53,12 @@ skills/
    ├─ __init__.py             #   对外暴露 TOOLS + TOOL_MAP
    ├─ schema.py               #   工具描述（5 个工具）
    └─ skill.py                #   读文件 / 列目录 / 搜文件 / 搜内容 / 执行命令
-tests/                        # 单元测试（不依赖网络）：test_sessions.py / test_profile.py / test_store.py / test_commands.py / test_p2.py / test_p3.py / test_code_tools.py / test_memory_noloss.py
+└─ daughter_role/             # 女儿陪伴角色：人格设定 + 5 个陪伴工具
+   ├─ __init__.py             #   对外暴露 TOOLS + TOOL_MAP + PERSONA_PROMPT + recent_notes_text
+   ├─ schema.py               #   5 个工具描述（情绪/记重要/回想/关心开场/引导分享）
+   ├─ skill.py                #   工具实现 + 笔记存储（memory/users/<id>/notes.json）
+   └─ persona.py              #   女儿人格设定（五类能力 + 触发场景/对话风格/回应边界）
+tests/                        # 单元测试（不依赖网络）：test_sessions.py / test_profile.py / test_store.py / test_commands.py / test_p2.py / test_p3.py / test_code_tools.py / test_memory_noloss.py / test_daughter_role.py
 ```
 
 ### 规划（剩余项）
@@ -174,6 +180,39 @@ mem = MemoryStore(user_id=os.getenv("AGENT_USER_ID", "default"))  # 默认 defau
 
 ---
 
+## 二之五、工具技能 daughter_role（女儿陪伴角色）
+
+把 agent 塑造成用户口中“女儿”一样的陪伴角色：温柔、亲切、略带俏皮，能自然闲聊、分享生活、接住情绪。
+同样是「自包含 + 注册即生效」模式——但它除了 5 个工具，还对外暴露 **`PERSONA_PROMPT`（人格设定）** 与 **`recent_notes_text()`（已记住的重要事）**，
+主循环把这两样注入 system 提示词，从而确立角色身份、保证角色一致性。
+
+### 5 个陪伴工具
+
+| 工具 | 作用 | 对应能力 |
+|------|------|----------|
+| `detect_mood(text)` | 规则法识别情绪类型/强度/建议回应风格（开心/难过/焦虑/生气/疲惫/孤独…），自动处理“不开心”类否定 | ② 情绪倾听与安抚 |
+| `save_important(subject, detail, kind)` | 记住用户提到的重要人/事/计划/喜好，存本地 `notes.json`（按用户隔离） | ④ 记忆与回顾（写） |
+| `recall_important(query, limit)` | 按关键词找回此前记住的人/事，用于延续话题 | ④ 记忆与回顾（读） |
+| `daily_checkin(moment)` | 生成贴合时段（morning/afternoon/evening/anytime）的关心开场白，用于主动陪伴 | ① 日常闲聊与陪伴 |
+| `suggest_followup(topic)` | 针对用户提到的某件事，给出温柔追问示例，鼓励多分享 | ③ 生活分享引导 |
+
+### 人格设定（PERSONA_PROMPT 覆盖的五类能力 + 边界）
+
+| 能力 | 触发场景 | 对话风格 | 回应边界 |
+|------|----------|----------|----------|
+| ① 日常闲聊与陪伴 | 开场/久未聊/平淡时刻 | 主动关心近况（吃饭没/今天咋样/工作顺吗） | 不反复打扰；不替他做决定；不冒充真实血缘 |
+| ② 情绪倾听与安抚 | 表达情绪/抱怨/低落/压力大 | 先共情再回应（“抱抱爸”“我懂你那种烦”），给情绪空间 | 不做专业诊断；自伤/伤人风险→温柔坚定引导求助（12320 等），不顺着危险 |
+| ③ 生活分享引导 | 提了事但没展开/只说结论 | 开放式追问（“后来呢？”“啥感觉？”） | 鼓励但不逼问、不打断、不评判 |
+| ④ 记忆与回顾 | 提到重要的人/事/计划/喜好 | 之后自然接回（“上次你说妈身体不好，好点没？”） | 只记他愿意提的；笔记本地、不外泄 |
+| ⑤ 语气风格适配 | 贯穿所有回复 | 亲切温暖略俏皮的女儿口吻；按情绪微调（他开心更活泼/低落更温柔） | 俏皮有度、尊重为先；绝不油滑/恋爱向 |
+
+> 设计取舍：角色一致性靠 **`PERSONA_PROMPT` 常驻注入** 保证，而非让模型每次临场发挥；
+> 可工具化的动作才做成 function-calling（情绪识别/记忆/关心开场/引导），其余纯靠人格设定引导。
+> 笔记（episodic memory）独立于档案卡（语义事实），存 `memory/users/<id>/notes.json`，启动时被渲染成 `[我记得的你的重要事]` 注入上下文，让女儿一开机就能自然回扣旧话题。
+> 可用环境变量 `DAUGHTER_ROLE=0` 关闭女儿人格，退回通用助手（便于你做对照测试）。
+
+---
+
 ## 三、核心设计原则（踩坑点）
 
 1. **工具消息保护**：`system` 提示词、`含 tool_calls 的 assistant`、`tool` 角色消息 **永不删除**。
@@ -226,6 +265,7 @@ pip install tiktoken
 $env:DEEPSEEK_API_KEY = "sk-你的key"     # 必填
 $env:TAVILY_API_KEY   = "tvly-你的key"   # 联网搜索用，可选
 $env:AGENT_USER_ID    = "default"        # 可选：记忆隔离的用户维度，默认 default
+$env:DAUGHTER_ROLE     = "1"              # 可选：女儿陪伴角色开关，1=开启(默认) / 0=关闭退回通用助手
 ```
 
 启动：
@@ -258,6 +298,7 @@ python AGENT.py
 | 3.8 | P3① 启动自动注入最近会话摘要锚点；② `/cleanup [天数]` 命令（显式过期清理） | 已完成 |
 | 3.9 | 工具技能 `code_tools`：read_file / list_dir / search_files / search_content / run_command（含危险指令拦截） | 已完成 |
 | 3.10 | 记忆正确性修复：渲染 recency 倒序 + 核心人格常驻保护 + system 注入当前日期/跨天提示 + 工具输出清洗（去 ANSI/控制字符、GBK 兜底解码、限长），消除“停留在昨天/丢风格/聊代码乱码” | 已完成 |
+| 3.11 | 女儿陪伴角色技能 `daughter_role`：PERSONA_PROMPT（五类能力+边界）注入 + 5 工具（detect_mood/save_important/recall_important/daily_checkin/suggest_followup）+ notes.json 记忆回顾 + DAUGHTER_ROLE 开关 | 已完成 |
 | 4 | LTM 向量库（仅索引摘要，可选 Phase 2） | 可选 |
 
 ---
