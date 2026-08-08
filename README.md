@@ -27,7 +27,7 @@
 
 ```
 AGENT.py                      # 主程序：Function Calling 主循环 + try/except 容错
-commands.py                   # 终端斜杠命令：/recall /load /sessions /profile /summary /forget /help
+commands.py                   # 终端命令：/recall /load /sessions /profile /summary /forget /cleanup /help
 memory/
 ├─ store.py                   # 统一记忆层 MemoryStore：封装三层 + 用户/会话隔离 + 检索/清理接口
 ├─ token_window.py            # STM：token 滑动窗口 prune()
@@ -48,7 +48,7 @@ skills/
    ├─ schema.py               #   工具描述
    ├─ skill.py                #   主逻辑：校验→请求→重试→降级
    └─ parser.py               #   安全解析 + 清洗（去 HTML/控长度）
-tests/                        # 单元测试（不依赖网络）：test_sessions.py / test_profile.py / test_store.py / test_commands.py / test_p2.py
+tests/                        # 单元测试（不依赖网络）：test_sessions.py / test_profile.py / test_store.py / test_commands.py / test_p2.py / test_p3.py
 ```
 
 ### 规划（剩余项）
@@ -116,11 +116,13 @@ mem = MemoryStore(user_id=os.getenv("AGENT_USER_ID", "default"))  # 默认 defau
 | `/load <会话ID>` | 载入某历史会话并**继续对话**（替换当前上下文，再裁剪防撑爆） | 续聊后照常 |
 | `/summary <会话ID> [--llm]` | 本地会话摘要（首问/轮数/工具，零 LLM 开销）；加 `--llm` 用模型生成压缩存档 `<id>.summary.json` | 仅 `--llm` 时 |
 | `/forget <会话ID>` | 删除某条归档会话（`current` 不可删） | 否 |
+| `/cleanup [天数]` | 清理超过 N 天（默认 30）的归档会话及其摘要（`current` 永不被删） | 否 |
 | `exit` | 退出 | — |
 
 > 设计取舍：`/recall` 只**展示**命中结果，不把历史内容塞回上下文——避免上下文膨胀与重复。
 > 需要「接着上次聊」请用 `/load` 显式载入；命令名支持带斜杠（推荐）或裸词（如直接输入 `sessions`）。
 > `/summary --llm` 生成的压缩摘要会在 `/load` 该会话时自动注入为上下文锚点，长会话续聊不必整段重载。
+> **启动自动注入**：若上一段会话曾用 `/summary --llm` 生成过摘要，重启 agent 时会自动把【最近一份】摘要作为上下文锚点注入（无需手动 `/load`），实现跨会话连续性；无摘要则不注入。
 
 ---
 
@@ -205,6 +207,7 @@ python AGENT.py
 | 3.5 | 统一记忆层 `store.py`：三层封装 + user/session 隔离 + 检索/清理接口 + 旧数据只读回退 | 已完成 |
 | 3.6 | 终端命令 `commands.py`：`/recall /load /sessions /profile /summary /forget /help` | 已完成 |
 | 3.7 | P2 增量抽取（只发新增轮次省 token）+ LLM 会话摘要 `/summary --llm`（压缩存档，`/load` 注入锚点） | 已完成 |
+| 3.8 | P3① 启动自动注入最近会话摘要锚点；② `/cleanup [天数]` 命令（显式过期清理） | 已完成 |
 | 4 | LTM 向量库（仅索引摘要，可选 Phase 2） | 可选 |
 
 ---

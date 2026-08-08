@@ -10,10 +10,11 @@ import os
 #   - 识别方式：以 / 开头即命令；首词恰好是命令名（无斜杠）也兼容，方便快速输入。
 from collections import Counter
 from memory.sessions import summarize_session
+from memory.store import format_summary_anchor
 
 
 # 支持的无参数 / 有参数命令名（裸词形式仅匹配这些精确词）
-_COMMAND_NAMES = {"help", "sessions", "profile", "recall", "load", "summary", "forget"}
+_COMMAND_NAMES = {"help", "sessions", "profile", "recall", "load", "summary", "forget", "cleanup"}
 
 
 def is_command(text: str):
@@ -69,7 +70,7 @@ async def run_command(name, arg, mem, messages, system_msg):
         # 若该归档会话已有 LLM 摘要，注入为上下文锚点（无需整段重载）
         summ = mem.load_summary(arg)
         if summ:
-            messages.insert(1, {"role": "system", "content": _format_summary_anchor(summ)})
+            messages.insert(1, {"role": "system", "content": format_summary_anchor(summ)})
             print("[系统] 已注入该会话的 LLM 摘要作为上下文锚点。")
         # 清空抽取缓冲：上一段会话的新增内容不应并入新会话抽取
         mem.reset_extract_buffer()
@@ -98,6 +99,22 @@ async def run_command(name, arg, mem, messages, system_msg):
         ok = mem.delete_session(arg)
         print(f"[系统] 会话 {arg} {'已删除' if ok else '不存在或不可删'}")
         return messages, True
+    if name == "cleanup":
+        days = 30
+        if arg:
+            try:
+                days = int(arg.split()[0])
+            except ValueError:
+                print("[系统] 天数须为整数，用法：/cleanup [天数]，默认 30 天")
+                return messages, True
+        removed = mem.cleanup_expired(days=days)
+        if removed:
+            print(f"[系统] 已清理 {len(removed)} 条超过 {days} 天的归档会话：")
+            for sid in removed:
+                print(f"  · {sid}")
+        else:
+            print(f"[系统] 没有超过 {days} 天的归档会话需要清理（数据完好）。")
+        return messages, True
     # 未知命令
     print(f"[系统] 未知命令：{name}，输入 /help 查看可用命令。")
     return messages, True
@@ -113,6 +130,7 @@ def _print_help():
     print("  /load <会话ID>     载入某历史会话并继续对话")
     print("  /summary <会话ID> [--llm]  本地统计摘要；加 --llm 用模型生成压缩存档")
     print("  /forget <会话ID>   删除某条归档会话")
+    print("  /cleanup [天数]    清理超过 N 天的归档会话（默认 30 天）")
     print("  exit              退出")
 
 
@@ -181,21 +199,6 @@ def _print_summary_local(session_id, msgs):
     if tools:
         # dict.fromkeys 去重保序
         print(f"  调用工具：{', '.join(dict.fromkeys(tools))}")
-
-
-def _format_summary_anchor(summ):
-    """把 LLM 摘要渲染成可注入 system 的上下文锚点文本。"""
-    lines = ["以下是你将要继续的会话的压缩摘要（非逐字记录）："]
-    if summ.get("title"):
-        lines.append(f"标题：{summ['title']}")
-    if summ.get("topics"):
-        lines.append("主题：" + "、".join(summ["topics"]))
-    if summ.get("key_points"):
-        lines.append("要点：")
-        lines += [f"  - {kp}" for kp in summ["key_points"]]
-    if summ.get("open_questions"):
-        lines.append(f"待续问题：{summ['open_questions']}")
-    return "\n".join(lines)
 
 
 async def _print_summary_llm(mem, session_id, msgs):

@@ -3,7 +3,7 @@ import aiohttp
 import json
 import os
 # ============ 统一记忆层：STM/MTM/LTM 一体，支持 user/session 维度隔离 ============
-from memory.store import MemoryStore
+from memory.store import MemoryStore, format_summary_anchor
 # user_id 可经环境变量 AGENT_USER_ID 切换，实现多用户记忆隔离；默认 default。
 mem = MemoryStore(user_id=os.getenv("AGENT_USER_ID", "default"))
 
@@ -112,6 +112,13 @@ async def main():
         print(f"[系统] 已恢复上次会话（{len(body)} 条历史消息）。")
         if profile_text:
             print("[系统] 已载入用户档案卡（LTM）。")
+
+    # ②-2 启动锚点：若上一段会话曾生成过 LLM 摘要，注入为上下文锚点，
+    #     让 agent 一开机就“知道之前聊到哪”，无需整段重载长历史。
+    recent_sum = mem.get_recent_summary()
+    if recent_sum:
+        messages.insert(1, {"role": "system", "content": format_summary_anchor(recent_sum)})
+        print("[系统] 已注入最近会话的 LLM 摘要作为上下文锚点。")
 
     # ③ 重载后立即裁剪，防止旧历史直接撑爆上下文窗口
     messages = mem.prune(messages, max_tokens=12000, soft_ratio=0.8)

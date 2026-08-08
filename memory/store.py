@@ -313,3 +313,37 @@ class MemoryStore:
     def load_summary(self, session_id: str) -> dict:
         """读取接口·读回某会话的 LLM 摘要（不存在返回 {}）。"""
         return self._read_json(self._summary_path(session_id), {})
+
+    def get_recent_summary(self) -> dict:
+        """
+        读取接口·返回本用户【最近一份】会话 LLM 摘要（按 mtime），
+        用于启动时把上一段会话的压缩摘要作为上下文锚点注入（连续性）。
+        只有存在 <id>.summary.json 时才非空；否则返回 {}（不注入）。
+        """
+        if not os.path.isdir(self.sessions_dir):
+            return {}
+        best, best_time = {}, None
+        for f in os.listdir(self.sessions_dir):
+            if not f.endswith(".summary.json"):
+                continue
+            p = os.path.join(self.sessions_dir, f)
+            t = os.path.getmtime(p)
+            if best_time is None or t > best_time:
+                best_time = t
+                best = self._read_json(p, {})
+        return best or {}
+
+
+def format_summary_anchor(summ: dict) -> str:
+    """把 LLM 摘要渲染成可注入 system 的上下文锚点文本（主循环与 /load 共用）。"""
+    lines = ["以下是你将要继续的会话的压缩摘要（非逐字记录）："]
+    if summ.get("title"):
+        lines.append(f"标题：{summ['title']}")
+    if summ.get("topics"):
+        lines.append("主题：" + "、".join(summ["topics"]))
+    if summ.get("key_points"):
+        lines.append("要点：")
+        lines += [f"  - {kp}" for kp in summ["key_points"]]
+    if summ.get("open_questions"):
+        lines.append(f"待续问题：{summ['open_questions']}")
+    return "\n".join(lines)
