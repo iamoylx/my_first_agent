@@ -9,7 +9,9 @@ __pycache__/
 .workbuddy/
 # 会话持久化是运行时生成的，重启即重新落盘，无需版本管理
 memory/sessions/
-# 长期档案卡：本地存储的用户事实，不公开、不预设（克隆即空记忆）
+# 统一记忆层按用户隔离的目录（memory/users/<id>/），含本地记忆，不进仓库
+memory/users/
+# 长期档案卡（扁平旧路径，兼容回退用）：本地存储的用户事实，不公开、不预设
 memory/profile.json
 # 编辑器/系统
 .vscode/

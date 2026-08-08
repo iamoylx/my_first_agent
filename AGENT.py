@@ -2,15 +2,18 @@ import asyncio
 import aiohttp
 import json
 import os
-from memory.token_window import prune  
+# ============ 统一记忆层：STM/MTM/LTM 一体，支持 user/session 维度隔离 ============
+from memory.store import MemoryStore
+# user_id 可经环境变量 AGENT_USER_ID 切换，实现多用户记忆隔离；默认 default。
+mem = MemoryStore(user_id=os.getenv("AGENT_USER_ID", "default"))
 
 # ============ 新增：引入技能注册表与两个技能 ============
 from skills import collect_tools
 from skills.web_search import TOOLS as ws_tools, TOOL_MAP as ws_map
 from skills.basic_tools import TOOLS as bt_tools, TOOL_MAP as bt_map
-from memory.sessions import load_last_session, save_session, autosave   # 新增：跨重启会话持久化
-from memory.profile import (load_profile, save_profile, merge_facts,    # 新增：LTM 用户档案卡
-                            to_context_text, extract_facts)
+
+# ============ 新增：引入终端命令分发（检索/跨会话操作，不进 LLM 循环）============
+from commands import is_command, run_command
 
 # ===================== 配置 =====================
 API_KEY = os.getenv("DEEPSEEK_API_KEY")
@@ -90,10 +93,12 @@ async def llm_stream_final_answer(messages: list) -> str:
 # ============ 改写 main：用 try/except 包住每一轮 ============
 async def main():
     # ===== ① 启动即读回：跨重启连续的关键（只写不读 = 重启仍空记忆）=====
-    last_msgs = load_last_session()          # 读取上次完整对话（含旧 system）
+    # 注：首次运行会从旧扁平路径（memory/profile.json、memory/sessions/）
+    #     只读回退已有数据，旧文件不会被改写或删除。
+    last_msgs = mem.load_last_session()      # 读取上次完整对话（含旧 system）
     # ===== 新增：载入 LTM 用户档案卡，渲染进 system 提示词（latest-wins 已落盘）=====
-    profile = load_profile()
-    profile_text = to_context_text(profile)
+    profile = mem.load_profile()
+    profile_text = mem.profile_context()
     system_content = "你是助手，可以调用工具查询时间、计算、联网搜索。"
     if profile_text:
         system_content += "\n\n[用户档案]\n" + profile_text   # 常驻注入，≤上下文预算
@@ -109,7 +114,7 @@ async def main():
             print("[系统] 已载入用户档案卡（LTM）。")
 
     # ③ 重载后立即裁剪，防止旧历史直接撑爆上下文窗口
-    messages = prune(messages, max_tokens=12000, soft_ratio=0.8)
+    messages = mem.prune(messages, max_tokens=12000, soft_ratio=0.8)
 
     print("===== DeepSeek Function Calling 终端Demo | 输入exit退出 =====")
 
@@ -124,6 +129,14 @@ async def main():
                 print("[系统] 已退出。")
                 break
             if not user_input:
+                continue
+
+            # ===== 新增：斜杠命令分发（只读检索/跨会话操作，不进 LLM 循环）=====
+            # 命中命令则执行并跳过本轮模型调用；/load 会改写 messages 实现续聊。
+            cmd = is_command(user_input)
+            if cmd:
+                name, arg = cmd
+                messages, _ = run_command(name, arg, mem, messages, system_msg)
                 continue
 
             messages.append({"role": "user", "content": user_input})
@@ -165,12 +178,12 @@ async def main():
                 messages.append({"role": "assistant", "content": answer})
 
                 # ---- 安全截断 ----
-                messages = prune(messages, max_tokens=12000, soft_ratio=0.8)
+                messages = mem.prune(messages, max_tokens=12000, soft_ratio=0.8)
 
                 # ===== 新增：每轮结束自动落盘（静默）=====
                 # 关键：即使你直接点 ✕ 关掉终端窗口、进程被系统杀死，
                 # 最近一轮的对话也已经写入磁盘，重启后能接上，不会丢记忆。
-                autosave(messages)
+                mem.autosave(messages)
 
             # 关键：捕获 API 错误，打印提示后继续循环，而不是让整个程序崩溃
             except aiohttp.ClientResponseError as e:
@@ -184,17 +197,16 @@ async def main():
                 continue
     finally:
         # ④ 无论怎么退出（exit / Ctrl+C / 异常）都兜底保存一次（含时间戳归档）。
-        #    写读分离：退出时写，启动时由 load_last_session 读回。
-        save_session(messages)
+        #    写读分离：退出时写，启动时由 mem.load_last_session 读回。
+        mem.save_session(messages)
         print("[系统] 会话已保存到本地。")
 
         # ===== 新增：会话结束离线抽取 → 更新档案卡（latest-wins 状态复写）=====
         # 写读分离：这里才会调一次 LLM 抽取事实，不占用户发言轮次的延迟。
         try:
-            new_facts = await extract_facts(messages, API_KEY, API_URL, MODEL)
+            new_facts = await mem.extract(messages, API_KEY, API_URL, MODEL)
             if new_facts:
-                _, changed = merge_facts(profile, new_facts)
-                save_profile(profile)
+                _, changed = mem.update_profile(new_facts)
                 if changed:
                     print(f"[系统] 档案卡已更新（新增/覆盖 {changed} 条事实）。")
         except Exception as e:

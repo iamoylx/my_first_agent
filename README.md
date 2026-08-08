@@ -11,10 +11,12 @@
 | 层 | 作用 | 存储 | 触发时机 | 机制 | 状态 |
 |----|------|------|----------|------|------|
 | **STM 短期** | 单会话内上下文过长时压缩 | 内存 `messages` | token 达窗口 80% | token 滑动窗口，丢最旧普通消息 | 已实现 |
-| **MTM 中期** | 关掉再开还能接住上次聊了啥 | 本地文件 `memory/sessions/` | 会话结束 / 启动 | 完整对话重载（续聊）+ 每轮静默落盘 | 已完成（摘要 Phase 待做） |
-| **LTM 长期·结构化** | 记住用户稳定事实/偏好 | `memory/profile.json` | 会话结束离线抽取 | 档案卡，**状态复写 latest-wins** | 已完成（本项目重点） |
+| **MTM 中期** | 关掉再开还能接住上次聊了啥 | `memory/users/<id>/sessions/` | 会话结束 / 启动 | 完整对话重载（续聊）+ 每轮静默落盘 | 已完成（摘要 Phase 待做） |
+| **LTM 长期·结构化** | 记住用户稳定事实/偏好 | `memory/users/<id>/profile.json` | 会话结束离线抽取 | 档案卡，**状态复写 latest-wins** | 已完成（本项目重点） |
 | **LTM 长期·向量** | 语义召回历史会话（可选） | 向量库 | 当前问题相关时检索 | 仅索引会话摘要，非每条消息 | 可选 Phase 2 |
 
+三层由 **统一记忆层 `memory/store.py`（MemoryStore）** 封装，对外提供一致的
+**写入 / 读取 / 检索 / 过期清理** 接口，并按 `user_id`（用户）+ `session_id`（会话）维度隔离。
 所有层的产物最终都通过 **system 提示词** 注入给 LLM。
 
 ---
@@ -25,10 +27,15 @@
 
 ```
 AGENT.py                      # 主程序：Function Calling 主循环 + try/except 容错
+commands.py                   # 终端斜杠命令：/recall /load /sessions /profile /summary /forget /help
 memory/
+├─ store.py                   # 统一记忆层 MemoryStore：封装三层 + 用户/会话隔离 + 检索/清理接口
 ├─ token_window.py            # STM：token 滑动窗口 prune()
-├─ sessions.py                # MTM：跨重启续聊（current.json 落盘/读回 + 时间戳归档 + 每轮静默 autosave）
-└─ profile.py                 # LTM 结构化档案卡（profile.json 读写 + latest-wins 合并 + 离线抽取 extract_facts）
+├─ sessions.py                # MTM 底层：落盘/读回/每轮 autosave/sanitize（被 store 复用）
+└─ profile.py                 # LTM 底层：档案卡读写 + latest-wins 合并 + 离线抽取（被 store 复用）
+# 运行时生成的隔离目录（已被 .gitignore 排除，不进仓库）：
+# memory/users/<user_id>/profile.json
+# memory/users/<user_id>/sessions/{current,<时间戳>}.json
 skills/
 ├─ __init__.py                # 技能注册表 collect_tools()
 ├─ basic_tools/               # 内置工具：时间 / 计算器
@@ -46,8 +53,73 @@ tests/                        # 单元测试（不依赖网络）：test_session
 
 ### 规划（剩余项）
 
-- **MTM 摘要 Phase**：`sessions.py` 已实现「完整对话续聊」，后续可加「会话摘要」模式（压缩后存档，启动时检索注入，而非整段重载）。
+- **终端命令层（已落地）**：`commands.py` 提供 `/recall /load /sessions /profile /summary /forget /help`，可在不消耗 LLM token 的前提下检视与操纵记忆（见「二之二」）。
+- **MTM 摘要 Phase**：`/summary` 目前是**本地零成本摘要**（首问/轮数/工具）；后续可加「LLM 会话摘要」模式（压缩后存档，启动时按相关性检索注入，而非整段重载）。
 - **LTM 向量库（可选 Phase 2）**：仅索引会话摘要的语义召回，非每条消息 embedding。
+
+---
+
+## 二之一、统一记忆层 `MemoryStore`（接口与隔离）
+
+`memory/store.py` 是记忆系统的统一入口，主程序只与它打交道。实例化时指定用户：
+
+```python
+from memory.store import MemoryStore
+mem = MemoryStore(user_id=os.getenv("AGENT_USER_ID", "default"))  # 默认 default
+```
+
+### 四类接口
+
+| 类别 | 方法 | 说明 |
+|------|------|------|
+| **写入** | `autosave(messages)` | 每轮静默落盘 `current.json`（防关窗口丢记忆） |
+| | `save_session(messages, session_id=None)` | 退出时完整保存：current + 一份时间戳归档 |
+| | `update_profile(extracted)` | 合并新事实（latest-wins），仅变更才落盘 |
+| **读取** | `load_last_session()` | 续聊：读回上次完整对话 |
+| | `load_profile()` | 读档案卡（带缓存） |
+| | `load_session(session_id)` | 按 id 读回某次归档会话 |
+| | `list_sessions()` | 列出本用户所有会话元信息 |
+| | `profile_context()` | 渲染档案卡为注入 system 的紧凑文本 |
+| **检索** | `search_profile(keyword)` | 档案卡关键词命中 |
+| | `search_sessions(keyword)` | 扫描归档会话含关键词的片段 |
+| | `retrieve(query)` | 跨层综合检索（档案 + 会话） |
+| **清理** | `cleanup_expired(days=30)` | 删除超龄归档会话（保留 current），仅显式调用 |
+
+### 维度隔离
+
+- **用户隔离**：每个 `user_id` 独立目录 `memory/users/<id>/`，互不串数据（多用户 Agent 直接换 `AGENT_USER_ID`）。
+- **会话隔离**：同用户下，`save_session(msgs, session_id="20260808_...")` 生成独立归档，`load_session(id)` 精确回看。
+
+### 向后兼容（数据安全保证）
+
+首次运行、`memory/users/<id>/` 尚不存在时，`load_profile()` / `load_last_session()` 会
+**从旧扁平路径（`memory/profile.json`、`memory/sessions/current.json`）只读回退**。
+回退过程**不删除、不改写**旧文件；首次保存时才把数据写到新的隔离目录。
+因此升级后你已有的对话历史与档案卡保持完整、零丢失。
+
+---
+
+## 二之二、终端命令（commands.py）
+
+命令与「工具(tools)」是两套机制：**工具**交给模型自主调用；**命令**由你在终端显式输入，
+用于**检视 / 操纵记忆**，且不消耗任何 LLM token（除离线抽取外的零成本操作）。
+
+主循环在每轮读入后、调用模型前先做命令分发（`is_command` 识别、`run_command` 执行），
+命中命令就跳过本轮模型调用。
+
+| 命令 | 作用 | 是否进 LLM |
+|------|------|-----------|
+| `/help` | 列出全部命令 | 否 |
+| `/sessions` | 列出本用户所有会话（ID / 消息数 / 修改时间） | 否 |
+| `/profile` | 查看长期档案卡（LTM）全部事实 | 否 |
+| `/recall <关键词>` | 跨层检索档案卡+历史会话并**展示**结果（只读，不注入上下文） | 否 |
+| `/load <会话ID>` | 载入某历史会话并**继续对话**（替换当前上下文，再裁剪防撑爆） | 续聊后照常 |
+| `/summary <会话ID>` | 生成本地会话摘要（首问/轮数/工具，零 LLM 开销） | 否 |
+| `/forget <会话ID>` | 删除某条归档会话（`current` 不可删） | 否 |
+| `exit` | 退出 | — |
+
+> 设计取舍：`/recall` 只**展示**命中结果，不把历史内容塞回上下文——避免上下文膨胀与重复。
+> 需要「接着上次聊」请用 `/load` 显式载入；命令名支持带斜杠（推荐）或裸词（如直接输入 `sessions`）。
 
 ---
 
@@ -102,6 +174,7 @@ pip install tiktoken
 ```powershell
 $env:DEEPSEEK_API_KEY = "sk-你的key"     # 必填
 $env:TAVILY_API_KEY   = "tvly-你的key"   # 联网搜索用，可选
+$env:AGENT_USER_ID    = "default"        # 可选：记忆隔离的用户维度，默认 default
 ```
 
 启动：
@@ -111,10 +184,13 @@ python AGENT.py
 ```
 
 **档案卡（LTM）行为**：
-- 启动时若 `memory/profile.json` 已有内容，会打印 `[系统] 已载入用户档案卡（LTM）。`，并把档案随 system 提示词常驻注入。
-- 每次退出（exit / Ctrl+C / 关终端被杀）时，agent 在 `finally` 里**离线抽取**本轮对话中的稳定事实，自动写入 `profile.json`（latest-wins 合并）。
+- 启动时 `MemoryStore` 载入本用户档案卡（首次运行从旧 `memory/profile.json` 只读回退），
+  打印 `[系统] 已载入用户档案卡（LTM）。`，并随 system 提示词常驻注入。
+- 每次退出（exit / Ctrl+C / 关终端被杀）时，agent 在 `finally` 里**离线抽取**本轮对话中的稳定事实，
+  自动写入本用户 `memory/users/<id>/profile.json`（latest-wins 合并）。
 - 下次启动 agent 便"记得"你是谁（如姓名、城市、学习目标）。
-- 直接编辑 `profile.json` 也可手动维护档案。
+- 直接编辑对应 `profile.json` 也可手动维护档案。
+- **多用户**：设置不同 `AGENT_USER_ID` 即可让每位用户拥有独立记忆，互不干扰。
 
 ---
 
@@ -125,6 +201,8 @@ python AGENT.py
 | 1 | STM：token 滑动窗口 `prune()` | 已完成 |
 | 2 | LTM 结构化档案卡 `profile.py`（含状态复写 latest-wins + 离线抽取） | 已完成 |
 | 3 | MTM 跨重启续聊 `sessions.py`（落盘/读回 + 每轮 autosave） | 已完成 |
+| 3.5 | 统一记忆层 `store.py`：三层封装 + user/session 隔离 + 检索/清理接口 + 旧数据只读回退 | 已完成 |
+| 3.6 | 终端命令 `commands.py`：`/recall /load /sessions /profile /summary /forget /help` | 已完成 |
 | 4 | MTM 会话摘要 / LTM 向量库（仅索引摘要，可选 Phase 2） | 可选 |
 
 ---
