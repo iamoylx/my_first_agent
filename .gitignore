@@ -9,6 +9,8 @@ __pycache__/
 .workbuddy/
 # 会话持久化是运行时生成的，重启即重新落盘，无需版本管理
 memory/sessions/
+# 长期档案卡：本地存储的用户事实，不公开、不预设（克隆即空记忆）
+memory/profile.json
 # 编辑器/系统
 .vscode/
 .DS_Store
@@ -22,3 +24,6 @@ Thumbs.db
 # ===== 日志 / 临时 =====
 *.log
 tmp/
+
+# ===== 测试脚本（不进仓库；本地用 temp 目录隔离，不污染 memory） =====
+tests/
