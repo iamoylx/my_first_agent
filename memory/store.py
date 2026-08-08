@@ -19,7 +19,8 @@ import os
 from datetime import datetime, timedelta
 
 from memory.token_window import prune as _prune
-from memory.profile import (merge_facts, to_context_text, extract_facts)
+from memory.profile import (merge_facts, to_context_text, extract_facts,
+                             extract_facts_from_text)
 from memory.sessions import sanitize
 
 
@@ -44,6 +45,7 @@ class MemoryStore:
         self._legacy_profile = os.path.join(self.base_dir, "profile.json")
         self._legacy_sessions_dir = os.path.join(self.base_dir, "sessions")
         self._profile_cache = None   # 运行时缓存，避免反复读盘
+        self._pending_extract = []   # 增量抽取缓冲：累积本轮新增的 user/assistant 文本
 
     # ===================== 路径与目录 =====================
     def _ensure(self):
@@ -251,7 +253,63 @@ class MemoryStore:
                     return False
         return False
 
-    # ===================== 离线抽取（写读分离） =====================
+    # ===================== 离线抽取（写读分离 + 增量） =====================
+    def buffer_round(self, user_text: str, assistant_text: str):
+        """
+        写入接口·累积本轮新增内容到抽取缓冲（增量抽取的核心）。
+        主循环每轮把 user+assistant 文本传入；会话结束 extract 时只发缓冲，
+        不重发整段历史，省 token。/load 切换会话会 reset_extract_buffer。
+        """
+        if user_text:
+            self._pending_extract.append(f"user: {user_text}")
+        if assistant_text:
+            self._pending_extract.append(f"assistant: {assistant_text}")
+
+    def reset_extract_buffer(self):
+        """清空抽取缓冲（/load 切换会话时调用，避免把上一会话内容并入新会话）。"""
+        self._pending_extract = []
+
     async def extract(self, messages: list, api_key: str, api_url: str, model: str) -> list:
-        """写入接口·会话结束离线抽取事实（委托 profile.extract_facts，失败降级 []）。"""
-        return await extract_facts(messages, api_key, api_url, model)
+        """
+        写入接口·会话结束离线抽取（增量）。
+        优先抽取 _pending_extract 累积的“本次新增轮次”；
+        若缓冲为空（例如跨进程重启后未接入 buffer_round）才降级用整段 messages，
+        保证功能不丢。抽完清空缓冲。任何失败都降级返回 []。
+        """
+        pending = list(self._pending_extract)
+        if pending:
+            pending_text = "\n".join(pending)
+        else:
+            # 兜底：无缓冲时用整段对话（兼容旧调用路径 / 漏接 buffer_round 的情况）
+            pending_text = "\n".join(
+                f"{m['role']}: {m.get('content', '')}"
+                for m in messages
+                if m.get("role") in ("user", "assistant") and m.get("content")
+            )
+        self._pending_extract = []   # 抽完即清，无论成败（finally 是会话终点）
+        if not pending_text.strip():
+            return []
+        # 只发缓冲/新增轮次，避免重发整段历史
+        return await extract_facts_from_text(pending_text, api_key, api_url, model)
+
+    # ===================== MTM：会话摘要（LLM 压缩存档） =====================
+    def _summary_path(self, session_id: str) -> str:
+        """摘要文件路径：<sessions_dir>/<id>.summary.json。兼容裸 id 与 id.json。"""
+        sid = session_id[:-5] if session_id.endswith(".json") else session_id
+        return os.path.join(self.sessions_dir, f"{sid}.summary.json")
+
+    def save_summary(self, session_id: str, summary: dict) -> dict:
+        """写入接口·保存某会话的 LLM 压缩摘要到 <id>.summary.json（原子写）。"""
+        self._ensure()
+        summary = dict(summary)
+        summary["session_id"] = session_id
+        summary["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        tmp = self._summary_path(session_id) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, self._summary_path(session_id))
+        return summary
+
+    def load_summary(self, session_id: str) -> dict:
+        """读取接口·读回某会话的 LLM 摘要（不存在返回 {}）。"""
+        return self._read_json(self._summary_path(session_id), {})

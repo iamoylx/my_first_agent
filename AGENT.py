@@ -136,7 +136,7 @@ async def main():
             cmd = is_command(user_input)
             if cmd:
                 name, arg = cmd
-                messages, _ = run_command(name, arg, mem, messages, system_msg)
+                messages, _ = await run_command(name, arg, mem, messages, system_msg)
                 continue
 
             messages.append({"role": "user", "content": user_input})
@@ -176,6 +176,9 @@ async def main():
                 print("AI：", end="", flush=True)
                 answer = await llm_stream_final_answer(messages)
                 messages.append({"role": "assistant", "content": answer})
+
+                # ===== 新增：累积本轮到抽取缓冲（增量抽取，省 token）=====
+                mem.buffer_round(user_input, answer)
 
                 # ---- 安全截断 ----
                 messages = mem.prune(messages, max_tokens=12000, soft_ratio=0.8)

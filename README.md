@@ -48,13 +48,13 @@ skills/
    ├─ schema.py               #   工具描述
    ├─ skill.py                #   主逻辑：校验→请求→重试→降级
    └─ parser.py               #   安全解析 + 清洗（去 HTML/控长度）
-tests/                        # 单元测试（不依赖网络）：test_sessions.py / test_profile.py
+tests/                        # 单元测试（不依赖网络）：test_sessions.py / test_profile.py / test_store.py / test_commands.py / test_p2.py
 ```
 
 ### 规划（剩余项）
 
 - **终端命令层（已落地）**：`commands.py` 提供 `/recall /load /sessions /profile /summary /forget /help`，可在不消耗 LLM token 的前提下检视与操纵记忆（见「二之二」）。
-- **MTM 摘要 Phase**：`/summary` 目前是**本地零成本摘要**（首问/轮数/工具）；后续可加「LLM 会话摘要」模式（压缩后存档，启动时按相关性检索注入，而非整段重载）。
+- **MTM 摘要（已落地 `/summary --llm`）**：`/summary` 本地零成本摘要（首问/轮数/工具）保留；加 `--llm` 用模型压缩会话为结构化摘要并存档 `<id>.summary.json`，`/load` 时若有摘要则注入为上下文锚点（无需整段重载）。
 - **LTM 向量库（可选 Phase 2）**：仅索引会话摘要的语义召回，非每条消息 embedding。
 
 ---
@@ -114,12 +114,13 @@ mem = MemoryStore(user_id=os.getenv("AGENT_USER_ID", "default"))  # 默认 defau
 | `/profile` | 查看长期档案卡（LTM）全部事实 | 否 |
 | `/recall <关键词>` | 跨层检索档案卡+历史会话并**展示**结果（只读，不注入上下文） | 否 |
 | `/load <会话ID>` | 载入某历史会话并**继续对话**（替换当前上下文，再裁剪防撑爆） | 续聊后照常 |
-| `/summary <会话ID>` | 生成本地会话摘要（首问/轮数/工具，零 LLM 开销） | 否 |
+| `/summary <会话ID> [--llm]` | 本地会话摘要（首问/轮数/工具，零 LLM 开销）；加 `--llm` 用模型生成压缩存档 `<id>.summary.json` | 仅 `--llm` 时 |
 | `/forget <会话ID>` | 删除某条归档会话（`current` 不可删） | 否 |
 | `exit` | 退出 | — |
 
 > 设计取舍：`/recall` 只**展示**命中结果，不把历史内容塞回上下文——避免上下文膨胀与重复。
 > 需要「接着上次聊」请用 `/load` 显式载入；命令名支持带斜杠（推荐）或裸词（如直接输入 `sessions`）。
+> `/summary --llm` 生成的压缩摘要会在 `/load` 该会话时自动注入为上下文锚点，长会话续聊不必整段重载。
 
 ---
 
@@ -203,12 +204,13 @@ python AGENT.py
 | 3 | MTM 跨重启续聊 `sessions.py`（落盘/读回 + 每轮 autosave） | 已完成 |
 | 3.5 | 统一记忆层 `store.py`：三层封装 + user/session 隔离 + 检索/清理接口 + 旧数据只读回退 | 已完成 |
 | 3.6 | 终端命令 `commands.py`：`/recall /load /sessions /profile /summary /forget /help` | 已完成 |
-| 4 | MTM 会话摘要 / LTM 向量库（仅索引摘要，可选 Phase 2） | 可选 |
+| 3.7 | P2 增量抽取（只发新增轮次省 token）+ LLM 会话摘要 `/summary --llm`（压缩存档，`/load` 注入锚点） | 已完成 |
+| 4 | LTM 向量库（仅索引摘要，可选 Phase 2） | 可选 |
 
 ---
 
 ## 八、已知技术债务 / 待优化
 
-- `memory/sessions.py` 目前是「完整对话续聊」模式，尚未做「会话摘要」压缩；长会话会随轮次累积，靠 `prune()` 控制窗口。
-- `extract_facts` 每次退出都重发完整 `messages` 给模型抽取（latest-wins 幂等，但略费 token）；后续可只抽「本次新增轮次」以优化。
+- `memory/sessions.py` 已支持「完整对话续聊」+「LLM 会话摘要」（`/summary --llm` 压缩存档、`/load` 注入锚点）两种模式；长会话仍靠 `prune()` 控制窗口。
+- 抽取已改为**增量**：每轮 `buffer_round` 累积新增轮次，会话结束 `extract` 只发新增内容（无缓冲时降级发整段），省 token。
 - `safe_trim()` 此前被记为死代码，经核查 `AGENT.py` 中已不存在，本条作废。

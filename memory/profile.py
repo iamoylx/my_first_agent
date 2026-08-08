@@ -104,21 +104,13 @@ def to_context_text(profile, max_chars=600):
     return text
 
 
-async def extract_facts(messages, api_key, api_url, model):
+async def _extract_call(text, api_key, api_url, model):
     """
-    离线抽取：把对话交给模型，提取结构化事实。
-    原理：写读分离——只在会话结束调用，不占用户轮次延迟。
-    返回 [{"key","value","confidence"}, ...]；任何失败都降级返回 []，不阻塞退出。
+    真正发网络请求抽取事实。text 为已拼好的 user/assistant 对话文本。
+    任何失败都降级返回 []，不阻塞退出。
     """
-    # 只取 user/assistant 的自然语言，剔除 system 与 tool 噪音
-    text = "\n".join(
-        f"{m['role']}: {m.get('content', '')}"
-        for m in messages
-        if m.get("role") in ("user", "assistant") and m.get("content")
-    )
     if not text.strip():
         return []
-
     payload = {
         "model": model,
         "messages": [
@@ -147,3 +139,26 @@ async def extract_facts(messages, api_key, api_url, model):
     except Exception:
         # 降级：抽取失败（网络/解析）不阻塞退出，下次会话还可再抽
         return []
+
+
+async def extract_facts_from_text(text, api_key, api_url, model):
+    """
+    从已拼好的纯文本抽取事实。供【增量抽取】复用——
+    MemoryStore 把“本次新增轮次”拼好文本后直接调用，避免重复拼装逻辑。
+    """
+    return await _extract_call(text, api_key, api_url, model)
+
+
+async def extract_facts(messages, api_key, api_url, model):
+    """
+    离线抽取：把对话交给模型，提取结构化事实。
+    原理：写读分离——只在会话结束调用，不占用户轮次延迟。
+    返回 [{"key","value","confidence","type"}, ...]；失败降级 []。
+    """
+    # 只取 user/assistant 的自然语言，剔除 system 与 tool 噪音
+    text = "\n".join(
+        f"{m['role']}: {m.get('content', '')}"
+        for m in messages
+        if m.get("role") in ("user", "assistant") and m.get("content")
+    )
+    return await _extract_call(text, api_key, api_url, model)
