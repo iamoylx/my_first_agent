@@ -2,7 +2,9 @@
 
 基于 DeepSeek Function Calling 实现的终端对话 Agent，重点练习两大能力：**工具调用** 与 **记忆系统**。
 
-本项目是**学习/练手性质**，架构以「简单、可理解、零额外成本」为先。长期记忆以 **结构化档案卡（JSON）** 为主；若要做生产级 Agent，应转向 **向量数据库 + RAG**（区别见第六节）。
+本项目是**学习/练手性质**，架构以「简单、可理解、零额外成本」为先。长期记忆以 **结构化档案卡（JSON）** 为主；若要做生产级 Agent，应转向 **向量数据库 + RAG**（区别见第五节）。
+
+> **记忆机制与数据彻底分离**：`memory/` 是纯机制代码（硬板接口），`memory_data/` 是纯本地记忆数据（硬盘，可整体复制提取），二者互不混杂（见第六节）。
 
 ---
 
@@ -11,8 +13,8 @@
 | 层 | 作用 | 存储 | 触发时机 | 机制 | 状态 |
 |----|------|------|----------|------|------|
 | **STM 短期** | 单会话内上下文过长时压缩 | 内存 `messages` | token 达窗口 80% | token 滑动窗口，丢最旧普通消息 | 已实现 |
-| **MTM 中期** | 关掉再开还能接住上次聊了啥 | `memory/users/<id>/sessions/` | 会话结束 / 启动 | 完整对话重载（续聊）+ 每轮静默落盘 | 已完成（摘要 Phase 待做） |
-| **LTM 长期·结构化** | 记住用户稳定事实/偏好 | `memory/users/<id>/profile.json` | 会话结束离线抽取 | 档案卡，**状态复写 latest-wins**；偏好标注 type=preference 并注入 system 调整回答；**渲染按 `updated_at` 倒序（最新优先），且对身份/角色/风格类事实常驻保护（不被预算截断）** | 已完成（本项目重点） |
+| **MTM 中期** | 关掉再开还能接住上次聊了啥 | `memory_data/users/<id>/sessions/` | 会话结束 / 启动 | 完整对话重载（续聊）+ 每轮静默落盘 + LLM 摘要锚点 | 已完成 |
+| **LTM 长期·结构化** | 记住用户稳定事实/偏好 | `memory_data/users/<id>/profile.json` | 会话结束离线抽取 | 档案卡，**状态复写 latest-wins**；偏好标注 type=preference 并注入 system 调整回答；**渲染按 `updated_at` 倒序（最新优先），且对身份/角色/风格类事实常驻保护（不被预算截断）** | 已完成（本项目重点） |
 | **LTM 长期·向量** | 语义召回历史会话（可选） | 向量库 | 当前问题相关时检索 | 仅索引会话摘要，非每条消息 | 可选 Phase 2 |
 
 三层由 **统一记忆层 `memory/store.py`（MemoryStore）** 封装，对外提供一致的
@@ -23,49 +25,33 @@
 
 ## 二、目录结构
 
-### 当前（已落地）
-
 ```
-AGENT.py                      # 主程序：Function Calling 主循环 + try/except 容错
+AGENT.py                      # 终端主程序：Function Calling 主循环 + try/except 容错
 commands.py                   # 终端命令：/recall /load /sessions /profile /summary /forget /cleanup /help
-memory/
-├─ store.py                   # 统一记忆层 MemoryStore：封装三层 + 用户/会话隔离 + 检索/清理接口
-├─ token_window.py            # STM：token 滑动窗口 prune()
-├─ sessions.py                # MTM 底层：落盘/读回/每轮 autosave/sanitize（被 store 复用）
-└─ profile.py                 # LTM 底层：档案卡读写 + latest-wins 合并 + 离线抽取（被 store 复用）
-# 运行时生成的隔离目录（已被 .gitignore 排除，不进仓库）：
-# memory/users/<user_id>/profile.json
-# memory/users/<user_id>/sessions/{current,<时间戳>}.json
-# memory/users/<user_id>/notes.json       # daughter_role 记住的重要人/事（episodic，本地）
-skills/
-├─ __init__.py                # 技能注册表 collect_tools()
-├─ basic_tools/               # 内置工具：时间 / 计算器
-│  ├─ __init__.py             #   对外暴露 TOOLS + TOOL_MAP
-│  ├─ schema.py               #   给 LLM 看的工具描述
-│  └─ skill.py                #   工具实现
-├─ web_search/                # 联网搜索技能（需 TAVILY_API_KEY）
-│  ├─ __init__.py             #   对外暴露 TOOLS + TOOL_MAP
-│  ├─ config.py               #   地址/超时/上限/Key（写死安全参数）
-│  ├─ schema.py               #   工具描述
-│  ├─ skill.py                #   主逻辑：校验→请求→重试→降级
-│  └─ parser.py               #   安全解析 + 清洗（去 HTML/控长度）
-└─ code_tools/                # 本地代码/命令技能：看自己文件夹代码 + 命令行简单操作
-   ├─ __init__.py             #   对外暴露 TOOLS + TOOL_MAP
-   ├─ schema.py               #   工具描述（5 个工具）
-   └─ skill.py                #   读文件 / 列目录 / 搜文件 / 搜内容 / 执行命令
-└─ daughter_role/             # 女儿陪伴角色：人格设定 + 5 个陪伴工具
-   ├─ __init__.py             #   对外暴露 TOOLS + TOOL_MAP + PERSONA_PROMPT + recent_notes_text
-   ├─ schema.py               #   5 个工具描述（情绪/记重要/回想/关心开场/引导分享）
-   ├─ skill.py                #   工具实现 + 笔记存储（memory/users/<id>/notes.json）
-   └─ persona.py              #   女儿人格设定（五类能力 + 触发场景/对话风格/回应边界）
-tests/                        # 单元测试（不依赖网络）：test_sessions.py / test_profile.py / test_store.py / test_commands.py / test_p2.py / test_p3.py / test_code_tools.py / test_memory_noloss.py / test_daughter_role.py
+core/
+└─ agent_core.py              # headless 内核：调模型 + 工具循环 + 流式 + DSML 防御 + build/finalize
+memory/                       # ★纯机制代码（硬板接口，进仓库，不含任何数据文件）
+├─ __init__.py                #   包说明
+├─ store.py                   #   统一记忆层 MemoryStore（路径由 base_dir 驱动，默认 memory_data/）
+├─ token_window.py            #   STM：token 滑动窗口 prune()
+├─ sessions.py                #   MTM 纯函数：sanitize 清洗 + summarize_session 摘要
+└─ profile.py                 #   LTM 纯函数：merge_facts 合并 + to_context_text 渲染 + extract 抽取
+memory_data/                  # ★纯本地记忆数据（硬盘，不进仓库，可整体复制提取）
+├─ profile.json               #   旧扁平档案（向后兼容只读回退，不写入）
+├─ sessions/                  #   旧扁平会话（向后兼容只读回退，不写入）
+└─ users/<user_id>/
+   ├─ profile.json            #   LTM 档案卡（长期事实，latest-wins）
+   └─ sessions/{current,<时间戳>}.json   # MTM 会话（续聊 + 归档 + .summary.json 摘要）
+skills/                       # 技能（自包含，注册即生效，主循环零改动）
+├─ __init__.py                #   collect_tools() 聚合器
+├─ basic_tools/               #   时间 get_current_time + 计算器 calculator
+├─ code_tools/                #   读文件/列目录/搜文件/搜内容/跑命令（含危险指令拦截）
+└─ web_search/                #   联网搜索（Tavily，URL 写死防 SSRF）
+tests/                        # 单元测试（不依赖网络，用 temp 目录隔离，不污染真实记忆）
+素材/                          # 桌宠阶段遗留立绘（终端版不加载，保留备用）
 ```
 
-### 规划（剩余项）
-
-- **终端命令层（已落地）**：`commands.py` 提供 `/recall /load /sessions /profile /summary /forget /help`，可在不消耗 LLM token 的前提下检视与操纵记忆（见「二之二」）。
-- **MTM 摘要（已落地 `/summary --llm`）**：`/summary` 本地零成本摘要（首问/轮数/工具）保留；加 `--llm` 用模型压缩会话为结构化摘要并存档 `<id>.summary.json`，`/load` 时若有摘要则注入为上下文锚点（无需整段重载）。
-- **LTM 向量库（可选 Phase 2）**：仅索引会话摘要的语义召回，非每条消息 embedding。
+**为什么 memory/ 和 memory_data/ 分开**：机制代码（`memory/`）与本地记忆数据（`memory_data/`）彻底解耦——代码进版本库，数据不进；想迁移/备份记忆，直接 `cp -r memory_data/` 即可整体带走，无需挑拣（详见第六节）。
 
 ---
 
@@ -76,6 +62,7 @@ tests/                        # 单元测试（不依赖网络）：test_session
 ```python
 from memory.store import MemoryStore
 mem = MemoryStore(user_id=os.getenv("AGENT_USER_ID", "default"))  # 默认 default
+# base_dir 默认指向项目根的 memory_data/；测试时可传 base_dir=tempfile 隔离
 ```
 
 ### 四类接口
@@ -97,13 +84,13 @@ mem = MemoryStore(user_id=os.getenv("AGENT_USER_ID", "default"))  # 默认 defau
 
 ### 维度隔离
 
-- **用户隔离**：每个 `user_id` 独立目录 `memory/users/<id>/`，互不串数据（多用户 Agent 直接换 `AGENT_USER_ID`）。
+- **用户隔离**：每个 `user_id` 独立目录 `memory_data/users/<id>/`，互不串数据（多用户 Agent 直接换 `AGENT_USER_ID`）。
 - **会话隔离**：同用户下，`save_session(msgs, session_id="20260808_...")` 生成独立归档，`load_session(id)` 精确回看。
 
 ### 向后兼容（数据安全保证）
 
-首次运行、`memory/users/<id>/` 尚不存在时，`load_profile()` / `load_last_session()` 会
-**从旧扁平路径（`memory/profile.json`、`memory/sessions/current.json`）只读回退**。
+首次运行、`memory_data/users/<id>/` 尚不存在时，`load_profile()` / `load_last_session()` 会
+**从旧扁平路径（`memory_data/profile.json`、`memory_data/sessions/current.json`）只读回退**。
 回退过程**不删除、不改写**旧文件；首次保存时才把数据写到新的隔离目录。
 因此升级后你已有的对话历史与档案卡保持完整、零丢失。
 
@@ -159,9 +146,9 @@ mem = MemoryStore(user_id=os.getenv("AGENT_USER_ID", "default"))  # 默认 defau
 
 ---
 
-## 二之四、记忆正确性保障（严格体检后修正）
+## 二之四、记忆正确性保障
 
-针对「停留在昨天 / 偶丢风格 / 聊代码乱码」三个症状，做了根因修复。**本次仅改渲染·注入·清洗逻辑，未读写任何 profile 文件，现有记录零丢失**（附 `tests/test_memory_noloss.py` 只读校验）。
+针对「停留在昨天 / 偶丢风格 / 聊代码乱码」三个症状，做了根因修复。**仅改渲染·注入·清洗逻辑，未读写任何 profile 文件，现有记录零丢失**（`tests/test_memory_noloss.py` 只读校验）。
 
 1. **今天的事被丢（根因：截断方向反了）**
    旧 `to_context_text` 按字典插入顺序（旧的在前）拼接后取 `text[:max_chars]`，导致**最新的（今天）事实在字典末尾、最先被切掉**。
@@ -171,7 +158,7 @@ mem = MemoryStore(user_id=os.getenv("AGENT_USER_ID", "default"))  # 默认 defau
    `agent_role`/`agent_style`/`agent_name` 等早期写入的**没有 `type` 字段**，被当普通事实参与截断。
    修复：渲染时识别「核心人格事实」——`type∈{preference,role}` **或** key 含 `role/style/name/pref` 等，永远**置顶且不被预算截断**；极小预算下仍完整保留。
 
-3. **停留在昨天（根因：上下文里没有“今天”）**
+3. **停留在昨天（根因：上下文里没有"今天"）**
    系统提示词原本不含日期，agent 不知道已是新的一天；恢复的上次会话也无跨天提示。
    修复：启动即在 system 注入「当前时间：YYYY年MM月DD日 HH:MM（周X）」；若恢复的会话来自**上一天**，额外注入跨天提示，要求按当前时间理解。
 
@@ -180,36 +167,37 @@ mem = MemoryStore(user_id=os.getenv("AGENT_USER_ID", "default"))  # 默认 defau
 
 ---
 
-## 二之五、工具技能 daughter_role（女儿陪伴角色）
+## 二之五、DSML 工具调用防御（core/agent_core.py）
 
-把 agent 塑造成用户口中“女儿”一样的陪伴角色：温柔、亲切、略带俏皮，能自然闲聊、分享生活、接住情绪。
-同样是「自包含 + 注册即生效」模式——但它除了 5 个工具，还对外暴露 **`PERSONA_PROMPT`（人格设定）** 与 **`recent_notes_text()`（已记住的重要事）**，
-主循环把这两样注入 system 提示词，从而确立角色身份、保证角色一致性。
+DeepSeek 偶尔不返回原生 `tool_calls`，而是把工具调用写成 `DSML` 文本塞进 `content`
+（形如 `<!--｜DSML｜｜invoke name="read_file">…</｜DSML｜｜invoke>`）。
+若直接当正文打印，会把内部标记泄露给用户、且工具不会真正执行。
 
-### 5 个陪伴工具
+`core/agent_core.py` 在工具调用循环前加了一道防御：
+- **能解析** → 转成原生 `tool_calls` **真正执行**（参数做 int/float 类型转换，兼容 `string="true/false"` 写法）；
+- **解析不了** → 清洗后直接落盘，**绝不把内部标记泄露给用户、也不死循环**。
 
-| 工具 | 作用 | 对应能力 |
-|------|------|----------|
-| `detect_mood(text)` | 规则法识别情绪类型/强度/建议回应风格（开心/难过/焦虑/生气/疲惫/孤独…），自动处理“不开心”类否定 | ② 情绪倾听与安抚 |
-| `save_important(subject, detail, kind)` | 记住用户提到的重要人/事/计划/喜好，存本地 `notes.json`（按用户隔离） | ④ 记忆与回顾（写） |
-| `recall_important(query, limit)` | 按关键词找回此前记住的人/事，用于延续话题 | ④ 记忆与回顾（读） |
-| `daily_checkin(moment)` | 生成贴合时段（morning/afternoon/evening/anytime）的关心开场白，用于主动陪伴 | ① 日常闲聊与陪伴 |
-| `suggest_followup(topic)` | 针对用户提到的某件事，给出温柔追问示例，鼓励多分享 | ③ 生活分享引导 |
+正则用 `｜{1,2}` 兼容两类 DSML 写法（变体A `<!--｜DSML｜｜...>` 含 HTML 注释前缀、变体B `｜｜DSML｜｜...>` 无前缀）。
+回归测试见 `tests/test_dsml_guard.py`。
 
-### 人格设定（PERSONA_PROMPT 覆盖的五类能力 + 边界）
+---
 
-| 能力 | 触发场景 | 对话风格 | 回应边界 |
-|------|----------|----------|----------|
-| ① 日常闲聊与陪伴 | 开场/久未聊/平淡时刻 | 主动关心近况（吃饭没/今天咋样/工作顺吗） | 不反复打扰；不替他做决定；不冒充真实血缘 |
-| ② 情绪倾听与安抚 | 表达情绪/抱怨/低落/压力大 | 先共情再回应（“抱抱爸”“我懂你那种烦”），给情绪空间 | 不做专业诊断；自伤/伤人风险→温柔坚定引导求助（12320 等），不顺着危险 |
-| ③ 生活分享引导 | 提了事但没展开/只说结论 | 开放式追问（“后来呢？”“啥感觉？”） | 鼓励但不逼问、不打断、不评判 |
-| ④ 记忆与回顾 | 提到重要的人/事/计划/喜好 | 之后自然接回（“上次你说妈身体不好，好点没？”） | 只记他愿意提的；笔记本地、不外泄 |
-| ⑤ 语气风格适配 | 贯穿所有回复 | 亲切温暖略俏皮的女儿口吻；按情绪微调（他开心更活泼/低落更温柔） | 俏皮有度、尊重为先；绝不油滑/恋爱向 |
+## 二之六、记忆机制/数据分离（硬板接口 vs 硬盘）★重要约定
 
-> 设计取舍：角色一致性靠 **`PERSONA_PROMPT` 常驻注入** 保证，而非让模型每次临场发挥；
-> 可工具化的动作才做成 function-calling（情绪识别/记忆/关心开场/引导），其余纯靠人格设定引导。
-> 笔记（episodic memory）独立于档案卡（语义事实），存 `memory/users/<id>/notes.json`，启动时被渲染成 `[我记得的你的重要事]` 注入上下文，让女儿一开机就能自然回扣旧话题。
-> 可用环境变量 `DAUGHTER_ROLE=0` 关闭女儿人格，退回通用助手（便于你做对照测试）。
+记忆系统的**机制代码**与**本地记忆数据**彻底分离，互不混杂：
+
+| | memory/ | memory_data/ |
+|---|---|---|
+| **角色** | 硬板接口（机制） | 硬盘（数据） |
+| **内容** | 纯 .py 代码：store/profile/sessions/token_window | 纯 .json 数据：profile.json / sessions/ / users/ |
+| **是否进仓库** | 进 | 不进（.gitignore） |
+| **路径硬编码** | 无（路径由 `MemoryStore(base_dir)` 驱动） | — |
+| **提取方式** | — | `cp -r memory_data/ <目标>` 整体带走 |
+
+**实现要点**：
+- `store.py` 新增模块级常量 `DATA_DIR = 项目根/memory_data`，`base_dir` 默认指向它；所有读写路径都从 `base_dir` 派生，`memory/` 包内**不再有任何指向数据位置的硬编码**。
+- 旧版 `profile.py`/`sessions.py` 里被 `MemoryStore` 同名方法取代的直接函数（`load_profile`/`save_profile`/`autosave`/`save_session` 等）已删除——它们曾硬编码 `os.path.dirname(__file__)` 指向 `memory/`，是数据混入接口包的根源。
+- **用户底线**：记忆数据绝不许丢。任何改动前先 `cp -r memory_data memory_data.bak.时间戳`，改完逐文件 md5 对比。
 
 ---
 
@@ -238,6 +226,8 @@ mem = MemoryStore(user_id=os.getenv("AGENT_USER_ID", "default"))  # 默认 defau
 主程序启动时用 `collect_tools()` 把各技能的 `(TOOLS, TOOL_MAP)` 聚合成统一清单，
 新增技能 = 在注册处加一对，**主循环分发逻辑零改动**（注册即生效）。
 
+当前注册的 8 个工具：`web_search` / `get_current_time` / `calculator` / `read_file` / `list_dir` / `search_files` / `search_content` / `run_command`。
+
 ---
 
 ## 五、与生产级 Agent 的区别（为何本项目不做向量库）
@@ -265,7 +255,6 @@ pip install tiktoken
 $env:DEEPSEEK_API_KEY = "sk-你的key"     # 必填
 $env:TAVILY_API_KEY   = "tvly-你的key"   # 联网搜索用，可选
 $env:AGENT_USER_ID    = "default"        # 可选：记忆隔离的用户维度，默认 default
-$env:DAUGHTER_ROLE     = "1"              # 可选：女儿陪伴角色开关，1=开启(默认) / 0=关闭退回通用助手
 ```
 
 启动：
@@ -275,13 +264,15 @@ python AGENT.py
 ```
 
 **档案卡（LTM）行为**：
-- 启动时 `MemoryStore` 载入本用户档案卡（首次运行从旧 `memory/profile.json` 只读回退），
+- 启动时 `MemoryStore` 载入本用户档案卡（首次运行从旧 `memory_data/profile.json` 只读回退），
   打印 `[系统] 已载入用户档案卡（LTM）。`，并随 system 提示词常驻注入。
 - 每次退出（exit / Ctrl+C / 关终端被杀）时，agent 在 `finally` 里**离线抽取**本轮对话中的稳定事实，
-  自动写入本用户 `memory/users/<id>/profile.json`（latest-wins 合并）。
+  自动写入本用户 `memory_data/users/<id>/profile.json`（latest-wins 合并）。
 - 下次启动 agent 便"记得"你是谁（如姓名、城市、学习目标）。
 - 直接编辑对应 `profile.json` 也可手动维护档案。
 - **多用户**：设置不同 `AGENT_USER_ID` 即可让每位用户拥有独立记忆，互不干扰。
+
+**备份/迁移记忆**：直接 `cp -r memory_data/ <目标位置>`，即可完整带走所有本地记忆（档案卡 + 全部会话历史 + 摘要）。
 
 ---
 
@@ -297,14 +288,16 @@ python AGENT.py
 | 3.7 | P2 增量抽取（只发新增轮次省 token）+ LLM 会话摘要 `/summary --llm`（压缩存档，`/load` 注入锚点） | 已完成 |
 | 3.8 | P3① 启动自动注入最近会话摘要锚点；② `/cleanup [天数]` 命令（显式过期清理） | 已完成 |
 | 3.9 | 工具技能 `code_tools`：read_file / list_dir / search_files / search_content / run_command（含危险指令拦截） | 已完成 |
-| 3.10 | 记忆正确性修复：渲染 recency 倒序 + 核心人格常驻保护 + system 注入当前日期/跨天提示 + 工具输出清洗（去 ANSI/控制字符、GBK 兜底解码、限长），消除“停留在昨天/丢风格/聊代码乱码” | 已完成 |
-| 3.11 | 女儿陪伴角色技能 `daughter_role`：PERSONA_PROMPT（五类能力+边界）注入 + 5 工具（detect_mood/save_important/recall_important/daily_checkin/suggest_followup）+ notes.json 记忆回顾 + DAUGHTER_ROLE 开关 | 已完成 |
+| 3.10 | 记忆正确性修复：渲染 recency 倒序 + 核心人格常驻保护 + system 注入当前日期/跨天提示 + 工具输出清洗 | 已完成 |
+| 3.11 | headless 内核 `core/agent_core.py`：抽离主循环，终端与前端共用 + DSML 工具调用防御 | 已完成 |
+| 3.12 | 记忆机制/数据分离：`memory/`（纯代码）与 `memory_data/`（纯数据）彻底解耦，可整体提取 | 已完成 |
 | 4 | LTM 向量库（仅索引摘要，可选 Phase 2） | 可选 |
 
 ---
 
 ## 八、已知技术债务 / 待优化
 
-- `memory/sessions.py` 已支持「完整对话续聊」+「LLM 会话摘要」（`/summary --llm` 压缩存档、`/load` 注入锚点）两种模式；长会话仍靠 `prune()` 控制窗口。
+- 长会话仍靠 `prune()` 控制窗口；`/summary --llm` 压缩存档 + `/load` 注入锚点是当前的连续性方案。
 - 抽取已改为**增量**：每轮 `buffer_round` 累积新增轮次，会话结束 `extract` 只发新增内容（无缓冲时降级发整段），省 token。
-- `safe_trim()` 此前被记为死代码，经核查 `AGENT.py` 中已不存在，本条作废。
+- `memory/` 包内已无死代码（旧版 `profile.load_profile/save_profile`、`sessions.autosave/save_session` 等被 `MemoryStore` 取代的直接函数已删除）。
+- `素材/` 为桌宠阶段遗留立绘，终端版不加载，保留备用。

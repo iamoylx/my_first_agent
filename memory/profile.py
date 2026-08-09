@@ -8,11 +8,8 @@
 #      绝不在用户发言的轮次里同步做，避免增加每轮延迟。
 #   4) 常驻注入：启动时载入，渲染成紧凑文本注入 system 提示词（≤上下文预算，约 15%）。
 import json
-import os
 import aiohttp                 # 离线抽取时复用，保证本模块自包含
 from datetime import datetime
-
-PROFILE_FILE = os.path.join(os.path.dirname(__file__), "profile.json")
 
 # 抽取提示词：抽两类高信号、稳定的用户记忆——事实 + 偏好/意图，明确禁止编造/猜测。
 EXTRACT_PROMPT = (
@@ -30,29 +27,6 @@ EXTRACT_PROMPT = (
     "若没有可提取的内容，返回 {\"facts\":[]}。\n"
     "只返回 JSON，不要额外文字。"
 )
-
-
-def load_profile():
-    """读取档案卡；文件不存在或解析失败都安全返回空结构。"""
-    if not os.path.exists(PROFILE_FILE):
-        return {"version": 1, "facts": {}}
-    try:
-        with open(PROFILE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if "facts" not in data:
-            data["facts"] = {}
-        return data
-    except (json.JSONDecodeError, OSError):
-        return {"version": 1, "facts": {}}
-
-
-def save_profile(profile):
-    """原子式写盘：先写临时文件再 os.replace 替换，避免半截文件损坏。"""
-    profile["updated_at"] = datetime.now().isoformat(timespec="seconds")
-    tmp = PROFILE_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(profile, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, PROFILE_FILE)   # 原子替换（Windows 也支持）
 
 
 def merge_facts(profile, extracted):

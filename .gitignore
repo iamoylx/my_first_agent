@@ -4,15 +4,19 @@ __pycache__/
 *.egg-info/
 *.egg
 
-# ===== 本地记忆与运行时产物（不进仓库） =====
+# ===== 本地记忆数据（硬盘，不进仓库） =====
+# memory/ 是机制代码（进仓库）；memory_data/ 是本地记忆数据，可整体提取、不公开
+memory_data/
+# 旧扁平路径防御性忽略（数据已迁至 memory_data/，防止以后误在 memory/ 下生成）
+memory/sessions/
+memory/users/
+memory/profile.json
+# 记忆备份（分离操作前的人工备份，不进仓库）
+memory.bak.*/
+# 女儿技能遗留笔记数据（本地记忆，不进仓库）
+skills/memory/
 # .workbuddy 是 WorkBuddy 的项目记忆/配置，含本地约定，不公开
 .workbuddy/
-# 会话持久化是运行时生成的，重启即重新落盘，无需版本管理
-memory/sessions/
-# 统一记忆层按用户隔离的目录（memory/users/<id>/），含本地记忆，不进仓库
-memory/users/
-# 长期档案卡（扁平旧路径，兼容回退用）：本地存储的用户事实，不公开、不预设
-memory/profile.json
 # 编辑器/系统
 .vscode/
 .DS_Store
@@ -29,3 +33,16 @@ tmp/
 
 # ===== 测试脚本（不进仓库；本地用 temp 目录隔离，不污染 memory） =====
 tests/
+
+# ===== PyInstaller 构建产物（不进仓库） =====
+build/
+dist/
+*.spec
+pet_icon.ico
+
+# ===== 隔离/待删暂存（清理时 mv 进来的垃圾，可逆，不进仓库） =====
+_trash/
+
+# ===== 桌宠阶段遗留素材（终端版不加载，保留备用，不进仓库） =====
+素材/
+

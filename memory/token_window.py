@@ -6,12 +6,14 @@ import os
 # ---------- 1) token 估算：优先 tiktoken，否则用字符启发式 ----------
 try:
     import tiktoken
-    # cl100k_base 是 OpenAI 的编码，对中文也近似有效，且离线可用
+    # cl100k_base 是 OpenAI 的编码，对中文也近似有效。
+    # 注意：get_encoding 在离线/网络受限时会抛 ValueError（而非 ImportError），
+    # 必须一并捕获，否则会中断整个模块导入、拖垮桌宠进程。
     _ENC = tiktoken.get_encoding("cl100k_base")
 
     def _count(text: str) -> int:
         return len(_ENC.encode(text or ""))
-except ImportError:
+except Exception:
     # 无依赖回退：CJK 汉字≈1 token/字，英文按字母数/3 粗估
     def _count(text: str) -> int:
         if not text:

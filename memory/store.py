@@ -6,8 +6,8 @@
 #   2) 分层存储：STM(内存 token 窗口) / MTM(会话文件) / LTM(档案卡) 三类接口统一。
 #   3) 维度隔离：user_id 隔离不同用户；session_id 隔离同用户的不同会话。
 #   4) 四类接口：写入(write) / 读取(read) / 检索(retrieve) / 过期清理(cleanup)。
-#   5) 向后兼容（关键）：首次运行时从旧扁平路径（memory/profile.json、
-#      memory/sessions/）只读回退已有数据，绝不删除或改写旧文件，
+#   5) 向后兼容（关键）：首次运行时从旧扁平路径（memory_data/profile.json、
+#      memory_data/sessions/）只读回退已有数据，绝不删除或改写旧文件，
 #      保证本地已有对话历史与档案卡不丢失、不被修改。
 #
 # 复用底层纯函数，避免重复实现：
@@ -23,10 +23,15 @@ from memory.profile import (merge_facts, to_context_text, extract_facts,
                              extract_facts_from_text)
 from memory.sessions import sanitize
 
+# 本地记忆数据根目录：与机制代码（memory/ 包）彻底分离。
+# 机制代码在 memory/，所有数据（profile.json / sessions/ / users/）落在此目录。
+# 指向项目根的 memory_data/；可被 base_dir 参数覆盖（测试用临时目录隔离）。
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "memory_data")
+
 
 class MemoryStore:
     """
-    统一记忆存储。每个用户拥有独立目录 memory/users/<user_id>/：
+    统一记忆存储。每个用户拥有独立目录 memory_data/users/<user_id>/：
         ├─ profile.json          # LTM 档案卡（长期事实）
         └─ sessions/
            ├─ current.json       # 当前会话（续聊用）
@@ -34,9 +39,9 @@ class MemoryStore:
     """
 
     def __init__(self, base_dir: str = None, user_id: str = "default"):
-        # base_dir 默认即 memory/ 自身；旧扁平文件（profile.json / sessions/）
-        # 也位于 base_dir 下，用于向后兼容只读回退。
-        self.base_dir = base_dir or os.path.dirname(__file__)
+        # base_dir 默认即 memory_data/（本地记忆数据根）；旧扁平文件
+        #（profile.json / sessions/）也位于该目录下，用于向后兼容只读回退。
+        self.base_dir = base_dir or DATA_DIR
         self.user_id = user_id
         self.user_dir = os.path.join(self.base_dir, "users", user_id)
         self.profile_path = os.path.join(self.user_dir, "profile.json")
