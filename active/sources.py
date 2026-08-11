@@ -73,6 +73,19 @@ class TriggerSource:
         pass
 
 
+def _to_afternoon(t):
+    """把凌晨时间（<7点）视为下午同一时刻（活动/天气提醒不可能在凌晨）。"""
+    if not t:
+        return t
+    try:
+        h = int(t.split(":")[0])
+    except (ValueError, IndexError):
+        return t
+    if h < 7:
+        return f"{h + 12:02d}:{t.split(':')[1]}"
+    return t
+
+
 def parse_time_text(text: str):
     """从中文时间描述解析 HH:MM；解析不到返回 None。
 
@@ -163,13 +176,27 @@ class ClockSource(TriggerSource):
             })
 
         # 3) 健身提醒：从含"健身"的条目解析时间
+        #    （无时段词的"五点"默认解析为凌晨，这里修正为下午——活动提醒不会在凌晨）
         for txt in schedule_texts:
             if "健身" in txt:
                 t = parse_time_text(txt)
+                t = _to_afternoon(t)
                 if t:
                     rules.append({
                         "time": t, "id": "gym_remind", "kind": "gym",
                         "text": "爸爸～健身时间到啦！别忘了你的锻炼计划，小满给你加油！💪",
+                    })
+                break
+
+        # 4.5) 天气提醒：schedule 含"天气/带伞/防晒"且能解析出时间
+        for txt in schedule_texts:
+            if any(w in txt for w in ("天气", "带伞", "防晒")):
+                t = parse_time_text(txt)
+                t = _to_afternoon(t)
+                if t:
+                    rules.append({
+                        "time": t, "id": "weather_remind", "kind": "weather",
+                        "text": "爸爸～到点啦！我先帮你查查天气，出门记得看要不要带伞/防晒哦～🌤️",
                     })
                 break
 
