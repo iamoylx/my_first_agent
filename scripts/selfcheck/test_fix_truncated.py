@@ -28,14 +28,14 @@ async def run_turn(fake_detect, fake_stream, user_text="记住我明天下午三
 
 # ---------- 场景1：detect 无工具 → 直接采用（stream_final 不应被调用）----------
 st1 = {"detect": 0, "stream": 0}
-async def d1(messages, tools, api_key):
+async def d1(messages, tools, api_key, **kw):
     st1["detect"] += 1
     if st1["detect"] == 1:
         return {"role": "assistant", "content": "", "tool_calls": [
             {"id": "c1", "type": "function", "function": {"name": "get_current_time", "arguments": "{}"}}]}
     return {"role": "assistant", "content": "爸爸，现在是晚上十点，还不到关心你的时候哦～"}
 
-async def s1(messages, api_key, **kw):
+async def s1(messages, api_key, on_token=None, on_reasoning=None, on_stripped_dsml=None, **kw):
     st1["stream"] += 1
     return "不应走到这里"
 
@@ -48,11 +48,11 @@ print("PASS 场景1: detect 直接采用完整回答（省一次调用）")
 
 # ---------- 场景2：detect 空内容 → stream_final 夹带 DSML → 执行工具 + 续写 ----------
 st2 = {"detect": 0, "stream": 0}
-async def d2(messages, tools, api_key):
+async def d2(messages, tools, api_key, **kw):
     st2["detect"] += 1
     return {"role": "assistant", "content": ""}
 
-async def s2(messages, api_key, on_token=None, on_reasoning=None, on_stripped_dsml=None):
+async def s2(messages, api_key, on_token=None, on_reasoning=None, on_stripped_dsml=None, **kw):
     st2["stream"] += 1
     if st2["stream"] == 1:
         head = "爸爸，你看，我把它牢牢记住啦！💖现在几点了呀，我看看是不是快到该关心你的时候了："

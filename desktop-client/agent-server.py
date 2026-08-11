@@ -54,6 +54,23 @@ if not API_KEY:
         "或环境变量修改后终端未重启。"
     )
 
+# ============ A3 双模型配置 ============
+# 文本对话默认走 DeepSeek（工具/记忆可靠）；图片消息自动走本地视觉模型（gemma3）。
+AGENT_LLM_BASE = os.getenv("AGENT_LLM_BASE", "https://api.deepseek.com/v1")
+AGENT_LLM_MODEL = os.getenv("AGENT_LLM_MODEL", "deepseek-chat")
+AGENT_LOCAL_BASE = os.getenv("AGENT_LOCAL_BASE", "http://127.0.0.1:11434/v1")
+AGENT_LOCAL_MODEL = os.getenv("AGENT_LOCAL_MODEL", "gemma3:4b")
+# AGENT_LOCAL_TEXT=1：纯文本也走本地模型（工具调用会变弱，谨慎开启）
+AGENT_LOCAL_TEXT = os.getenv("AGENT_LOCAL_TEXT") == "1"
+
+
+def _route_llm(images: bool) -> tuple:
+    """路由：有图片 → 本地视觉；纯文本 → 默认 DeepSeek（或 AGENT_LOCAL_TEXT 走本地）。"""
+    if images or AGENT_LOCAL_TEXT:
+        return AGENT_LOCAL_BASE, AGENT_LOCAL_MODEL
+    return AGENT_LLM_BASE, AGENT_LLM_MODEL
+
+
 PORT = int(os.getenv("AGENT_PORT", "18789"))
 mem = MemoryStore(base_dir=os.getenv("AGENT_MEMORY_DIR") or None,
                   user_id=os.getenv("AGENT_USER_ID", "default"))
@@ -182,15 +199,17 @@ async def chat_handler(request):
         # 用户刚发消息：通知主动触发调度器（空闲源据此重置计时）
         active_scheduler.on_user_activity()
 
-        # 图片附件（多模态准备）：保存到 logs/uploads，正文注入路径提示（不进记忆/历史）
+        # 图片附件（A3 多模态）：保存 logs/uploads + 转 data URI 喂本地视觉模型（不进记忆/历史）
+        images = None
         try:
             img_b64 = str(data.get("image_base64") or "")
             if img_b64:
                 saved = _save_upload(img_b64)
                 if saved:
-                    user_text = f"{user_text}\n[用户附了一张图片，已保存到：{saved}]"
+                    images = [img_b64 if img_b64.startswith("data:") else "data:image/png;base64," + img_b64]
         except Exception:
             pass
+        llm_base, llm_model = _route_llm(bool(images))
 
         # 收集流式 token 到缓冲区 + 思考轨迹
         tokens_buffer = []
@@ -213,6 +232,9 @@ async def chat_handler(request):
                 on_token=on_token,
                 on_thinking=on_thinking,
                 task_store=task_store,
+                llm_base=llm_base,
+                llm_model=llm_model,
+                images=images,
             )
             reply = "".join(tokens_buffer)
             _log_thinking(user_text, thinking_trace)
@@ -268,6 +290,17 @@ async def chat_stream_handler(request):
                 thinking_trace.append(ev)
                 asyncio.ensure_future(sse_thinking(ev))
 
+            images = None
+            try:
+                img_b64 = str(data.get("image_base64") or "")
+                if img_b64:
+                    saved = _save_upload(img_b64)
+                    if saved:
+                        images = [img_b64 if img_b64.startswith("data:") else "data:image/png;base64," + img_b64]
+            except Exception:
+                pass
+            llm_base, llm_model = _route_llm(bool(images))
+
             messages = await core.process_turn(
                 messages=messages,
                 user_text=user_text,
@@ -278,6 +311,9 @@ async def chat_stream_handler(request):
                 on_token=sse_send,
                 on_thinking=_collect,
                 task_store=task_store,
+                llm_base=llm_base,
+                llm_model=llm_model,
+                images=images,
             )
             _log_thinking(user_text, thinking_trace)
             await response.write(b"data: [DONE]\n\n")

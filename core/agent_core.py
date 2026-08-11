@@ -39,22 +39,29 @@ MAX_TOOL_ROUNDS = 8
 # 会话结束时自动生成 MTM 摘要的最小消息数（仅较长会话做，控制成本）
 SUMMARY_MIN_MESSAGES = 30
 
-# ChatOpenAI 实例缓存：同一 api_key 复用一个客户端
+# ChatOpenAI 实例缓存：同一 (api_key, base_url, model) 复用一个客户端
 _LLM_CACHE = {}
 
 
-def _get_llm(api_key: str) -> ChatOpenAI:
-    """获取（缓存的）DeepSeek ChatOpenAI 客户端。"""
-    if api_key not in _LLM_CACHE:
-        _LLM_CACHE[api_key] = ChatOpenAI(
-            model=MODEL,
+def _get_llm(api_key: str, base_url: str = None, model: str = None) -> ChatOpenAI:
+    """获取（缓存的）ChatOpenAI 客户端。
+
+    A3 双模型：base_url/model 可切换（默认 DeepSeek；
+    传 Ollama 的 http://127.0.0.1:11434/v1 + gemma3:4b 即走本地模型）。
+    """
+    base_url = base_url or API_BASE
+    model = model or MODEL
+    key = (api_key, base_url, model)
+    if key not in _LLM_CACHE:
+        _LLM_CACHE[key] = ChatOpenAI(
+            model=model,
             api_key=api_key,
-            base_url=API_BASE,
+            base_url=base_url,
             temperature=0.7,
-            timeout=60,
+            timeout=120,
             max_retries=1,
         )
-    return _LLM_CACHE[api_key]
+    return _LLM_CACHE[key]
 
 
 # ===================== 0. DSML 工具调用防御 =====================
@@ -198,8 +205,12 @@ def _extract_dsml_tool_calls(content: str) -> list:
 
 
 
-def _to_lc_messages(messages: list) -> list:
-    """把 OpenAI 格式 dict 消息列表转成 LangChain message 列表。"""
+def _to_lc_messages(messages: list, images: list = None) -> list:
+    """把 OpenAI 格式 dict 消息列表转成 LangChain message 列表。
+
+    images: 可选 data URI 列表（多模态）。有图片时，把最后一条 user 消息
+    转为多模态 parts（text + image_url），供视觉模型（如 gemma3）看图。
+    """
     out = []
     for m in messages:
         role = m.get("role")
@@ -207,7 +218,14 @@ def _to_lc_messages(messages: list) -> list:
         if role == "system":
             out.append(SystemMessage(content=content))
         elif role == "user":
-            out.append(HumanMessage(content=content))
+            if images:
+                # 多模态：text + 图片 parts（图片只喂本轮 LLM，不入历史）
+                parts = [{"type": "text", "text": content}]
+                for uri in images:
+                    parts.append({"type": "image_url", "image_url": {"url": uri}})
+                out.append(HumanMessage(content=parts))
+            else:
+                out.append(HumanMessage(content=content))
         elif role == "assistant":
             tc = m.get("tool_calls")
             if tc:
@@ -241,16 +259,25 @@ def _ai_to_dict(ai) -> dict:
 
 
 # ===================== 1. 非流式：检测工具调用（LangChain）=====================
-async def detect_tool_call(messages: list, tools: list, api_key: str) -> dict:
+async def detect_tool_call(messages: list, tools: list, api_key: str,
+                          base_url: str = None, model: str = None,
+                          images: list = None) -> dict:
     """用 LangChain ChatOpenAI + bind_tools 检测本轮是否需要调用工具。
 
     tools 为 OpenAI function schema 列表（LangChain 直接支持），返回 OpenAI 格式
     assistant message dict，兼容既有 DSML 防御 / 工具循环逻辑。
+    base_url/model 可切本地模型；images 传 data URI（多模态）。
     """
-    llm = _get_llm(api_key)
-    lc_msgs = _to_lc_messages(messages)
-    ai = await llm.bind_tools(tools).ainvoke(lc_msgs)
-    return _ai_to_dict(ai)
+    llm = _get_llm(api_key, base_url, model)
+    lc_msgs = _to_lc_messages(messages, images)
+    try:
+        ai = await llm.bind_tools(tools).ainvoke(lc_msgs)
+        return _ai_to_dict(ai)
+    except Exception as e:
+        # 模型不支持工具调用（如本地 gemma3 视觉模型）：降级为"无工具"，直接生成回答
+        if "does not support tools" in str(e).lower() or "tool" in str(e).lower() and "support" in str(e).lower():
+            return {"role": "assistant", "content": ""}
+        raise
 
 
 # ===================== 2. 流式：最终回答逐字回调（LangChain astream）=====================
@@ -269,7 +296,8 @@ def _notify_stripped_dsml(text: str, on_stripped_dsml) -> None:
 
 
 async def stream_final(messages: list, api_key: str, on_token=None, on_reasoning=None,
-                    on_stripped_dsml=None) -> str:
+                    on_stripped_dsml=None, base_url: str = None, model: str = None,
+                    images: list = None) -> str:
     """用 LangChain astream 流式输出最终回答；每收到一个字调用 on_token(chunk)。返回完整文本。
 
     双保险清洗：模型偶尔会在最终回答里夹带 <invoke>/<parameter>/DSML 标记，
@@ -279,8 +307,8 @@ async def stream_final(messages: list, api_key: str, on_token=None, on_reasoning
     on_stripped_dsml(calls) 可选：若剥离掉了 DSML 工具调用（模型在正文里夹带工具、
     会导致正文被拦腰截断），把解析出的调用回调出去，由上层执行工具并续写结尾。
     """
-    llm = _get_llm(api_key)
-    lc_msgs = _to_lc_messages(messages)
+    llm = _get_llm(api_key, base_url, model)
+    lc_msgs = _to_lc_messages(messages, images)
     full_text = ""
     pending = ""   # 尾部缓冲：避免把"半截标签"漏出去（等标签闭合后再一起清洗）
     async for chunk in llm.astream(lc_msgs):
@@ -456,7 +484,8 @@ def _format_tool_call(name, args):
 
 async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                        tools: list, tool_map: dict, api_key: str,
-                       on_token=None, on_thinking=None, task_store=None) -> list:
+                       on_token=None, on_thinking=None, task_store=None,
+                       llm_base=None, llm_model=None, images=None) -> list:
     """处理一次用户输入的完整流程：工具调用循环 + 流式最终回答 + 抽取缓冲 + 落盘。
     返回更新后的 messages。
     on_token(chunk) 在每个流式字上触发（首个 chunk 到达即代表 TALKING 开始）。
@@ -494,7 +523,9 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
         tool_rounds = 0
         while True:
             _think("reason", "判断本轮是否需要调用工具…")
-            ai_msg = await detect_tool_call(messages, tools, api_key)
+            ai_msg = await detect_tool_call(messages, tools, api_key,
+                                            base_url=llm_base, model=llm_model,
+                                            images=images)
             content = ai_msg.get("content") or ""
             # 防御：模型偶尔把工具调用写成 DSML 文本塞进 content（而非原生 tool_calls）。
             # 直接当正文会泄露内部标记、且工具不执行；这里识别并纠正。
@@ -578,7 +609,9 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                         stripped_calls.append(c)
             answer = await stream_final(messages, api_key, on_token=on_token,
                                         on_reasoning=_on_reason,
-                                        on_stripped_dsml=_on_stripped)
+                                        on_stripped_dsml=_on_stripped,
+                                        base_url=llm_base, model=llm_model,
+                                        images=images)
             # 兜底：最终回答夹带 DSML 工具调用被剥离 → 执行工具并让模型续写结尾，
             # 避免用户看到"…的时候了："这类冒号后没内容的截断回复。
             if stripped_calls:
@@ -611,7 +644,8 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                                     "用一两句话把结尾说完；不要重复已说过的内容，也不要再调用任何工具。）"),
                     })
                     tail = await stream_final(messages, api_key, on_token=on_token,
-                                              on_reasoning=_on_reason)
+                                              on_reasoning=_on_reason,
+                                              base_url=llm_base, model=llm_model)
                     messages.pop()   # 移除临时 system，不污染历史
                     messages[-1]["content"] = (messages[-1]["content"] or "") + tail
                     answer = messages[-1]["content"]

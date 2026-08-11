@@ -8,7 +8,7 @@ import core.agent_core as core
 # ---- mock 模型层 ----
 state = {"detect": 0}
 
-async def fake_detect(messages, tools, api_key):
+async def fake_detect(messages, tools, api_key, **kw):
     state["detect"] += 1
     if state["detect"] == 1:
         return {"role": "assistant", "content": "", "tool_calls": [

@@ -6,7 +6,7 @@
 >
 > **档案卡 v3 板块化**：长期记忆按 5 个板块分类（用户身份 / Agent设定 / 用户偏好 / 行为规定 / 主动触发），写入自动分类 + 规范命名 + 相似去重；客户端档案卡支持板块折叠与直接编辑（`scripts/migrate_profile_v3.py` 完成 v2→v3 无丢失迁移）。
 >
-> **进化路线见 `plan.md`**：阶段0「思考可视化」✅ + 阶段A1「主动触发」✅ + 阶段A2「生活 skill」✅ + **阶段B1「MCP 框架」✅**（Obsidian 笔记已接入，企业微信推送已接，音乐/日历/browser-use 模板就绪）→ 阶段A3（本地模型）→ 阶段B2（健康数据）→ 阶段C（微信/常驻化）。客户端支持**图片附件**（多模态预留）。
+> **进化路线见 `plan.md`**：阶段0「思考可视化」✅ + A1「主动触发」✅ + A2「生活 skill」✅ + B1「MCP 框架」✅ + **A3「本地模型」✅**（Ollama + gemma3:4b 多模态，图片消息走本地视觉、文本走 DeepSeek 双模型）→ 阶段B2（健康数据）→ 阶段C（微信/常驻化）。客户端已支持**图片附件**并真正「看图」。
 
 ---
 
@@ -193,6 +193,7 @@ Rust 侧 Tauri Commands（前端 `invoke` 名）：`start_python_server` / `stop
 
 - **必填**：`DEEPSEEK_API_KEY`（缺失启动即报错）。
 - **可选**：`TAVILY_API_KEY`（联网搜索）、`AGENT_USER_ID`（记忆隔离，默认 `default`）、`AGENT_PORT`（桌面后端端口，默认 `18789`）、`WECOM_WEBHOOK_URL`（企业微信群机器人 webhook，配置后主动消息同步推送企微）。
+- **A3 本地模型**：`AGENT_LOCAL_BASE`（默认 `http://127.0.0.1:11434/v1`）、`AGENT_LOCAL_MODEL`（默认 `gemma3:4b`）；图片消息自动走本地视觉模型；`AGENT_LOCAL_TEXT=1` 时纯文本也走本地（工具调用会变弱）。
 - **pip 依赖**：`aiohttp`（必需）；`tiktoken`（可选，更准的 token 估算）。
 
 ---
@@ -222,7 +223,8 @@ Rust 侧 Tauri Commands（前端 `invoke` 名）：`start_python_server` / `stop
 | 0 | 思考过程可视化（Thinking Trace：后端轨迹 + 前端折叠灰字 + 日志落盘） | 已完成 |
 | A1 | 主动触发机制（作息/健身/空闲关心 → 桌宠气泡+主窗口；全屏免打扰；MCP/微信接口预留） | 已完成 |
 | A2 | 生活 skill（reminder/todo 提醒任务 + weather 天气 + health_record 健康记录） | 已完成 |
-| A2.5 | 客户端图片附件（输入框选图/粘贴→base64→后端保存 logs/uploads，多模态预留） | 已完成 |
+| A2.5 | 客户端图片附件（输入框选图/粘贴→base64→后端保存 logs/uploads） | 已完成 |
+| A3 | 本地模型接入（Ollama + gemma3:4b 多模态：图片走本地视觉、文本走 DeepSeek 双模型；detect 对不支持工具的模型自动降级） | 已完成 |
 | 3.13 | 档案卡 v3 板块化（5 板块 + 自动分类/命名规范/去重 + 前端折叠/编辑 + 无丢失迁移） | 已完成 |
 | B1 | 通用 MCP 框架（mcp_bridge 配置式 client + 工具动态注册 + /mcp/tools）+ Obsidian 笔记接入 + 企业微信推送 Carrier | 已完成 |
 | 1 | STM：token 滑动窗口 `prune()` | 已完成 |
