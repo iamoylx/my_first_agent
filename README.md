@@ -4,6 +4,8 @@
 
 > **记忆机制与数据彻底分离**：`memory/` 是纯机制代码（硬板接口），`memory_data/` 是纯本地记忆数据（硬盘），二者互不混杂。
 >
+> **档案卡 v3 板块化**：长期记忆按 5 个板块分类（用户身份 / Agent设定 / 用户偏好 / 行为规定 / 主动触发），写入自动分类 + 规范命名 + 相似去重；客户端档案卡支持板块折叠与直接编辑（`scripts/migrate_profile_v3.py` 完成 v2→v3 无丢失迁移）。
+>
 > **进化路线见 `plan.md`**：阶段0「思考可视化」✅ + 阶段A1「主动触发」✅ + 阶段A2「生活 skill」✅ + **阶段B1「MCP 框架」✅**（Obsidian 笔记已接入，企业微信推送已接，音乐/日历/browser-use 模板就绪）→ 阶段A3（本地模型）→ 阶段B2（健康数据）→ 阶段C（微信/常驻化）。客户端支持**图片附件**（多模态预留）。
 
 ---
@@ -123,11 +125,14 @@ npx tauri build             # 在 src-tauri/target/release 产出 agent-desktop.
 | 类别 | 方法 | 说明 |
 |------|------|------|
 | **写入** | `autosave(messages)` | 每轮静默落盘 `current.json` |
+| | `add_profile_item(key,value,type,conf,category)` | 新增档案项（自动分类 + key 规范化） |
+| | `update_profile_item(key,value,category,conf)` | 编辑档案项（内容/板块/置信度） |
 | | `save_session(messages, session_id=None)` | 退出时完整保存（current + 时间戳归档） |
 | | `update_profile(extracted)` | 合并新事实（latest-wins），仅变更才落盘 |
 | | `save_summary` / `buffer_round` / `reset_extract_buffer` / `extract` | 摘要、增量抽取缓冲与离线抽取 |
 | **读取** | `load_last_session()` / `load_profile()` / `load_session(id)` / `list_sessions()` / `profile_context()` / `load_summary()` / `get_recent_summary()` / `get_last_session_date()` | 续聊 / 读档案 / 读归档 / 渲染 / 摘要锚点 |
 | **检索** | `search_profile(kw)` / `search_sessions(kw)` / `retrieve(query)` | 档案 + 会话跨层检索 |
+| | `list_profile_items()` | 按 5 板块分组返回（供管理页展示） |
 | **清理** | `cleanup_expired(days=30)` / `delete_session(id)` | 过期清理（`current` 永不可删） |
 
 **维度隔离**：`user_id` → `memory_data/users/<id>/`；`session_id` → `sessions/<id>.json`。
@@ -228,6 +233,7 @@ Rust 侧 Tauri Commands（前端 `invoke` 名）：`start_python_server` / `stop
 | A1 | 主动触发机制（作息/健身/空闲关心 → 桌宠气泡+主窗口；全屏免打扰；MCP/微信接口预留） | 已完成 |
 | A2 | 生活 skill（reminder/todo 提醒任务 + weather 天气 + health_record 健康记录） | 已完成 |
 | A2.5 | 客户端图片附件（输入框选图/粘贴→base64→后端保存 logs/uploads，多模态预留） | 已完成 |
+| 3.13 | 档案卡 v3 板块化（5 板块 + 自动分类/命名规范/去重 + 前端折叠/编辑 + 无丢失迁移） | 已完成 |
 | B1 | 通用 MCP 框架（mcp_bridge 配置式 client + 工具动态注册 + /mcp/tools）+ Obsidian 笔记接入 + 企业微信推送 Carrier | 已完成 |
 | 1 | STM：token 滑动窗口 `prune()` | 已完成 |
 | 2 | LTM 结构化档案卡 + 离线抽取 | 已完成 |

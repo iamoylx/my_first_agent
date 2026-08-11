@@ -114,45 +114,64 @@ class ClockSource(TriggerSource):
         self.rules = self._build_rules(config)
 
     def _build_rules(self, config: dict) -> list:
+        """从 schedule 板块（+旧作息 key 兼容）扫描内容生成触发规则。
+
+        v3 档案板块化后 key 命名由写入端规范化（可能为 schedule_sleep/schedule_sleep_habit 等），
+        因此这里按「内容关键词」匹配，而非依赖精确 key——更健壮。
+        """
         rules = []
         profile = self.mem.load_profile() or {}
         facts = profile.get("facts", {}) or {}
 
-        def val(k):
-            v = facts.get(k)
-            if isinstance(v, dict) and v.get("active") is not False:
-                return str(v.get("value") or "")
-            return ""
+        # 触发关键词：命中即视为可能产生主动提醒的条目（跨板块扫描，容忍分类模糊）
+        _TRIGGER_WORDS = ("睡", "牛奶", "健身", "提醒", "几点", "到点", "作息",
+                          "带伞", "防晒", "吃药", "喝水", "起床", "锻炼")
+        _OLD_KEYS = ("wake_time", "sleep_time", "sleep_habit", "gym_time",
+                     "gym_habit", "habit", "preference")
+        schedule_texts = []
+        for k, v in facts.items():
+            if not isinstance(v, dict) or v.get("active") is False:
+                continue
+            val = str(v.get("value") or "")
+            cat = v.get("category") or ""
+            k_l = str(k).lower()
+            if (cat in ("schedule", "pref")
+                    or k_l.startswith(("schedule_", "pref_"))
+                    or k_l in _OLD_KEYS
+                    or any(w in val for w in _TRIGGER_WORDS)):
+                schedule_texts.append(val)
+
+        all_text = "；".join(schedule_texts)
 
         # 1) 睡眠提醒：识别熬夜作息 → 23:30 提醒（提前量，而不是真到凌晨才提醒）
-        sleep_text = val("sleep_time") or val("sleep_habit") or val("wake_time") or ""
-        if any(w in sleep_text for w in _NIGHT_WORDS):
+        if any(w in all_text for w in _NIGHT_WORDS):
             rules.append({
                 "time": "23:30", "id": "sleep_remind", "kind": "sleep",
                 "text": "爸爸～又到睡觉时间啦！你平时总是熬夜到凌晨，小满可心疼了，今晚早点睡好不好？晚安！(๑•́ ₃ •̀๑)",
             })
-        elif sleep_text:
+        elif "睡" in all_text or "作息" in all_text:
             rules.append({
                 "time": "23:30", "id": "sleep_remind", "kind": "sleep",
                 "text": "爸爸～到睡觉时间啦，小满陪你一起进入甜甜的梦乡，晚安！💤",
             })
 
-        # 2) 睡前牛奶：档案偏好含"睡前+牛奶" → 提前 10 分钟提醒
-        milk_text = val("preference") or ""
-        if "牛奶" in milk_text and ("睡前" in milk_text or "睡觉" in milk_text):
+        # 2) 睡前牛奶：内容含"睡前+牛奶" → 提前 10 分钟提醒
+        if "牛奶" in all_text and ("睡前" in all_text or "睡觉" in all_text):
             rules.append({
                 "time": "23:20", "id": "milk_remind", "kind": "milk",
                 "text": "爸爸～睡前牛奶时间到啦！喝杯热牛奶再睡，对胃好哦～🥛",
             })
 
-        # 3) 健身提醒：解析 gym_time / gym_habit 里的时间
-        gym_text = val("gym_time") or val("gym_habit") or ""
-        t = parse_time_text(gym_text)
-        if t:
-            rules.append({
-                "time": t, "id": "gym_remind", "kind": "gym",
-                "text": "爸爸～健身时间到啦！别忘了你的锻炼计划，小满给你加油！💪",
-            })
+        # 3) 健身提醒：从含"健身"的条目解析时间
+        for txt in schedule_texts:
+            if "健身" in txt:
+                t = parse_time_text(txt)
+                if t:
+                    rules.append({
+                        "time": t, "id": "gym_remind", "kind": "gym",
+                        "text": "爸爸～健身时间到啦！别忘了你的锻炼计划，小满给你加油！💪",
+                    })
+                break
 
         # 4) 配置里的固定规则（用户自定义）
         for r in config.get("rules", []) or []:

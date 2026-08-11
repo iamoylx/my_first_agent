@@ -374,10 +374,33 @@ async def profile_add_handler(request):
         data.get("value", ""),
         str(data.get("type", "fact")),
         data.get("confidence", 0.9),
+        str(data.get("category", "")),
     )
     if not ok:
         return web.json_response({"error": err}, status=400)
     return web.json_response({"ok": True})
+
+
+async def profile_update_handler(request):
+    """POST /profile/update — 编辑一条档案项（改内容/板块/置信度；key 不变）。
+    Body: {"key","value","category","confidence"}
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
+    key = str(data.get("key", "")).strip()
+    if not key:
+        return web.json_response({"error": "empty key"}, status=400)
+    ok = mem.update_profile_item(
+        key,
+        value=data.get("value"),
+        category=str(data.get("category", "")),
+        confidence=data.get("confidence"),
+    )
+    if not ok:
+        return web.json_response({"error": "key 不存在"}, status=404)
+    return web.json_response({"ok": True, "key": key})
 
 
 async def assets_proxy(request):
@@ -498,6 +521,7 @@ def create_app():
     app.router.add_post("/profile/toggle", profile_toggle_handler)
     app.router.add_post("/profile/delete", profile_delete_handler)
     app.router.add_post("/profile/add", profile_add_handler)
+    app.router.add_post("/profile/update", profile_update_handler)
     # 主动触发 WebSocket（阶段A1）
     app.router.add_get("/ws", ws_handler)
     # MCP 工具状态（B1）

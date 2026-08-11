@@ -134,24 +134,29 @@
         </header>
         <p class="memory-hint">√=生效 · ×=停用（停用后不再注入对话）· 删除会先存档保留 · 改动在下次会话生效</p>
         <div class="memory-body">
-            <div class="memory-section">
-                <h3 class="memory-section-title">事实</h3>
-                <div class="memory-list" id="facts-list"></div>
-            </div>
-            <div class="memory-section">
-                <h3 class="memory-section-title">偏好</h3>
-                <div class="memory-list" id="prefs-list"></div>
-            </div>
+            <div class="memory-categories" id="memory-categories"></div>
         </div>
         <div class="memory-add-form" id="memory-add-form" hidden>
-            <input id="add-key" placeholder="key（英文小写下划线，如 pref_drink）" />
+            <input id="add-key" placeholder="key（英文小写下划线，如 pref_drink）" disabled />
             <input id="add-value" placeholder="内容（如 冰美式）" />
             <select id="add-type">
                 <option value="fact">事实</option>
                 <option value="preference">偏好</option>
+                <option value="role">角色</option>
             </select>
-            <button class="memory-add-ok" id="btn-add-confirm">添加</button>
+            <select id="add-category">
+                <option value="user">用户身份</option>
+                <option value="agent">Agent设定</option>
+                <option value="pref">用户偏好</option>
+                <option value="rule">行为规定</option>
+                <option value="schedule">主动触发</option>
+            </select>
+            <input id="add-confidence" placeholder="置信度 0-1（可留空）" type="number" min="0" max="1" step="0.05" />
+            <button class="memory-add-ok" id="btn-add-confirm">保存</button>
             <button class="memory-add-cancel" id="btn-add-cancel">取消</button>
+        </div>
+        <div class="memory-edit-banner" id="memory-edit-banner" hidden>
+            <span>正在编辑：<b id="edit-key-label"></b></span>
         </div>
     </section>
 

@@ -229,12 +229,36 @@ pub async fn profile_delete(key: String) -> Result<serde_json::Value, String> {
 /// 新增一条自定义事实/偏好
 #[tauri::command]
 pub async fn profile_add(key: String, value: String, fact_type: String,
-                         confidence: f64) -> Result<serde_json::Value, String> {
+                         confidence: f64, category: String) -> Result<serde_json::Value, String> {
     let client = reqwest::Client::new();
     let resp = client
         .post(server_url("/profile/add"))
         .json(&serde_json::json!({"key": key, "value": value,
-                                  "type": fact_type, "confidence": confidence}))
+                                  "type": fact_type, "confidence": confidence,
+                                  "category": category}))
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {e}"))?;
+    if resp.status().is_success() {
+        resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+    } else {
+        Err(format!("HTTP {}", resp.status()))
+    }
+}
+
+/// 编辑一条档案项（改内容/板块/置信度）
+#[tauri::command]
+pub async fn profile_update(key: String, value: Option<String>,
+                            category: Option<String>,
+                            confidence: Option<f64>) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::new();
+    let mut body = serde_json::json!({"key": key});
+    if let Some(v) = value { body["value"] = serde_json::Value::String(v); }
+    if let Some(c) = category { body["category"] = serde_json::Value::String(c); }
+    if let Some(cf) = confidence { body["confidence"] = serde_json::Value::from(cf); }
+    let resp = client
+        .post(server_url("/profile/update"))
+        .json(&body)
         .send()
         .await
         .map_err(|e| format!("请求失败: {e}"))?;

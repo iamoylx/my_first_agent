@@ -705,13 +705,35 @@ html, body {
     gap: 20px;
 }
 
+.memory-section {
+    background: rgba(255, 255, 255, 0.45);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 12px 16px;
+    box-shadow: var(--shadow-sm);
+}
+.memory-section[open] { background: rgba(255, 255, 255, 0.6); }
 .memory-section-title {
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 600;
     color: var(--text-secondary);
-    letter-spacing: 1px;
-    margin-bottom: 10px;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    user-select: none;
+    -webkit-user-select: none;
+    padding: 2px 0;
 }
+.memory-section-title::-webkit-details-marker { display: none; }
+.memory-section-title::before { content: '\25b8'; color: var(--text-muted); font-size: 12px; transition: transform 0.15s var(--ease-out); }
+.memory-section[open] > .memory-section-title::before { transform: rotate(90deg); }
+.memory-section-title:hover { color: var(--accent); }
+.memory-count { font-size: 11px; font-weight: 500; color: var(--accent); background: var(--accent-light); border-radius: 10px; padding: 1px 8px; }
+.memory-section-desc { font-size: 11px; font-weight: 400; color: var(--text-muted); margin-left: 8px; letter-spacing: 0; }
+.memory-section .memory-list { margin-top: 10px; }
 
 .memory-list {
     display: flex;
@@ -789,6 +811,10 @@ html, body {
     background: #fbeaea !important;
 }
 
+.edit-btn { color: var(--accent) !important; border-color: rgba(212, 165, 184, 0.5) !important; }
+.edit-btn:hover { background: var(--accent) !important; color: white !important; }
+.memory-edit-banner { margin: 8px 24px 0; padding: 6px 12px; background: var(--accent-light); border-radius: var(--radius-sm); font-size: 12px; color: var(--text-secondary); }
+.memory-edit-banner[hidden] { display: none; }
 .memory-empty {
     font-size: 13px;
     color: var(--text-muted);

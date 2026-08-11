@@ -456,8 +456,15 @@ function sleep(ms) {
 }
 
 
-// ============ 档案卡管理（记忆 UI） ============
+// ============ 档案卡管理（记忆 UI · v3 板块化） ============
 let memoryData = null;
+let editKey = null;                       // null=新增模式；非空=编辑该 key
+let catOpen = { user: true, agent: true, pref: true, rule: true, schedule: true };
+
+const CATEGORY_NAMES = {
+    user: '用户身份', agent: 'Agent设定', pref: '用户偏好',
+    rule: '行为规定', schedule: '主动触发',
+};
 
 document.addEventListener('DOMContentLoaded', () => {
     const btnMemory = document.getElementById('btn-memory');
@@ -466,25 +473,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnAddOk = document.getElementById('btn-add-confirm');
     const btnAddCancel = document.getElementById('btn-add-cancel');
 
-    // 双保险：启动时确保记忆页隐藏（聊天页优先）
     document.getElementById('memory-view').hidden = true;
 
     btnMemory?.addEventListener('click', openMemoryView);
     btnBack?.addEventListener('click', closeMemoryView);
-    btnAdd?.addEventListener('click', () => {
-        const form = document.getElementById('memory-add-form');
-        form.hidden = !form.hidden;
-        if (!form.hidden) document.getElementById('add-key').focus();
-    });
-    btnAddOk?.addEventListener('click', addMemoryItem);
-    btnAddCancel?.addEventListener('click', () => {
-        document.getElementById('memory-add-form').hidden = true;
-    });
+    btnAdd?.addEventListener('click', openAddForm);
+    btnAddOk?.addEventListener('click', saveMemoryItem);
+    btnAddCancel?.addEventListener('click', hideMemoryForm);
 });
 
 function openMemoryView() {
-    const view = document.getElementById('memory-view');
-    view.hidden = false;
+    document.getElementById('memory-view').hidden = false;
     loadMemoryItems();
 }
 
@@ -492,35 +491,93 @@ function closeMemoryView() {
     document.getElementById('memory-view').hidden = true;
 }
 
+// ---------- 表单控制 ----------
+function openAddForm() {
+    editKey = null;
+    document.getElementById('add-key').disabled = false;
+    document.getElementById('add-key').value = '';
+    document.getElementById('add-value').value = '';
+    document.getElementById('add-confidence').value = '';
+    document.getElementById('memory-edit-banner').hidden = true;
+    document.getElementById('memory-add-form').hidden = false;
+    document.getElementById('add-value').focus();
+}
+
+function openEditForm(item) {
+    editKey = item.key;
+    document.getElementById('add-key').disabled = true;
+    document.getElementById('add-key').value = item.key;
+    document.getElementById('add-value').value = item.value || '';
+    document.getElementById('add-type').value = item.type || 'fact';
+    document.getElementById('add-category').value =
+        (item.category && CATEGORY_NAMES[item.category]) ? item.category : 'user';
+    document.getElementById('add-confidence').value = item.confidence ?? '';
+    document.getElementById('edit-key-label').textContent = item.key;
+    document.getElementById('memory-edit-banner').hidden = false;
+    document.getElementById('memory-add-form').hidden = false;
+    document.getElementById('add-value').focus();
+}
+
+function hideMemoryForm() {
+    document.getElementById('memory-add-form').hidden = true;
+    document.getElementById('memory-edit-banner').hidden = true;
+}
+
+// ---------- 加载与渲染 ----------
 async function loadMemoryItems() {
     const invoke = getInvoke();
     if (!invoke) { showFatal('Tauri API 未注入'); return; }
-    document.getElementById('facts-list').innerHTML = '<div class="memory-empty">加载中…</div>';
-    document.getElementById('prefs-list').innerHTML = '<div class="memory-empty">加载中…</div>';
+    const body = document.getElementById('memory-body');
+    const prevScroll = body ? body.scrollTop : 0;
     try {
         memoryData = await invoke('get_profile_items');
         renderMemoryItems();
     } catch (err) {
         console.error('[Memory] 加载档案卡失败:', err);
-        document.getElementById('facts-list').innerHTML = '<div class="memory-empty">加载失败，请稍后重试（' + err + '）</div>';
-        document.getElementById('prefs-list').innerHTML = '';
+        const cat = document.getElementById('memory-categories');
+        cat.innerHTML = '<div class="memory-empty">加载失败：' + err + '</div>';
     }
+    if (body) body.scrollTop = prevScroll;   // 删除/切换后不跳回顶部
 }
 
 function renderMemoryItems() {
-    const factsList = document.getElementById('facts-list');
-    const prefsList = document.getElementById('prefs-list');
-    factsList.innerHTML = '';
-    prefsList.innerHTML = '';
-    if (!memoryData) return;
-    renderMemoryList(factsList, memoryData.facts || []);
-    renderMemoryList(prefsList, memoryData.preferences || []);
-    if (!(memoryData.facts || []).length) {
-        factsList.innerHTML = '<div class="memory-empty">暂无事实，点右上角「＋ 新建」添加</div>';
-    }
-    if (!(memoryData.preferences || []).length) {
-        prefsList.innerHTML = '<div class="memory-empty">暂无偏好，点右上角「＋ 新建」添加</div>';
-    }
+    const container = document.getElementById('memory-categories');
+    container.innerHTML = '';
+    if (!memoryData || !Array.isArray(memoryData.categories)) return;
+
+    memoryData.categories.forEach(cat => {
+        const items = cat.items || [];
+        const section = document.createElement('details');
+        section.className = 'memory-section';
+        section.open = catOpen[cat.id] !== false;
+
+        const summary = document.createElement('summary');
+        summary.className = 'memory-section-title';
+        const badge = document.createElement('span');
+        badge.className = 'memory-count';
+        badge.textContent = items.length ? ` ${items.length} 条` : ' 空';
+        summary.appendChild(document.createTextNode(cat.name));
+        summary.appendChild(badge);
+        const desc = document.createElement('span');
+        desc.className = 'memory-section-desc';
+        desc.textContent = cat.desc || '';
+        summary.appendChild(desc);
+        section.appendChild(summary);
+
+        const list = document.createElement('div');
+        list.className = 'memory-list';
+        if (items.length) {
+            renderMemoryList(list, items);
+        } else {
+            const empty = document.createElement('div');
+            empty.className = 'memory-empty';
+            empty.textContent = '暂无内容，点右上角「＋ 新建」添加';
+            list.appendChild(empty);
+        }
+        section.appendChild(list);
+        section.addEventListener('toggle', () => { catOpen[cat.id] = section.open; });
+        container.appendChild(section);
+    });
 }
 
 function renderMemoryList(container, items) {
@@ -538,7 +595,8 @@ function renderMemoryList(container, items) {
         valEl.textContent = item.value;
         const metaEl = document.createElement('span');
         metaEl.className = 'memory-item-meta';
-        metaEl.textContent = `confidence ${item.confidence ?? '-'} · ${(item.updated_at || '').slice(0, 16)}`;
+        const t = item.type === 'preference' ? '偏好' : (item.type === 'role' ? '角色' : '事实');
+        metaEl.textContent = `${t} · conf ${item.confidence ?? '-'} · ${(item.updated_at || '').slice(0, 16)}`;
         info.append(keyEl, valEl, metaEl);
 
         const actions = document.createElement('div');
@@ -547,26 +605,30 @@ function renderMemoryList(container, items) {
         toggle.className = 'toggle-btn ' + (item.active === false ? 'off' : 'on');
         toggle.textContent = item.active === false ? '× 停用' : '√ 生效';
         toggle.addEventListener('click', () => toggleItem(item.key, item.active === false));
+        const edit = document.createElement('button');
+        edit.className = 'edit-btn';
+        edit.textContent = '修改';
+        edit.title = '编辑内容/板块（不用删除重建）';
+        edit.addEventListener('click', () => openEditForm(item));
         const del = document.createElement('button');
         del.className = 'del-btn';
         del.textContent = '删除';
         del.addEventListener('click', () => deleteItem(item.key));
-        actions.append(toggle, del);
+        actions.append(toggle, edit, del);
 
         row.append(info, actions);
         container.appendChild(row);
     });
 }
 
+// ---------- 操作 ----------
 async function toggleItem(key, active) {
     const invoke = getInvoke();
     if (!invoke) return;
     try {
         await invoke('profile_toggle', { key, active });
         await loadMemoryItems();
-    } catch (err) {
-        console.error('[Memory] 切换生效失败:', err);
-    }
+    } catch (err) { console.error('[Memory] 切换失败:', err); }
 }
 
 async function deleteItem(key) {
@@ -576,26 +638,29 @@ async function deleteItem(key) {
     try {
         await invoke('profile_delete', { key });
         await loadMemoryItems();
-    } catch (err) {
-        console.error('[Memory] 删除失败:', err);
-    }
+    } catch (err) { console.error('[Memory] 删除失败:', err); }
 }
 
-async function addMemoryItem() {
+async function saveMemoryItem() {
+    const invoke = getInvoke();
+    if (!invoke) return;
     const key = document.getElementById('add-key').value.trim();
     const value = document.getElementById('add-value').value.trim();
     const type = document.getElementById('add-type').value;
+    const category = document.getElementById('add-category').value;
+    const confRaw = document.getElementById('add-confidence').value.trim();
     if (!key || !value) { alert('key 和内容都不能为空'); return; }
-    const invoke = getInvoke();
-    if (!invoke) return;
+    const confidence = confRaw ? Math.min(1, Math.max(0, parseFloat(confRaw) || 0.9)) : 0.9;
     try {
-        await invoke('profile_add', { key, value, factType: type, confidence: 0.9 });
-        document.getElementById('add-key').value = '';
-        document.getElementById('add-value').value = '';
-        document.getElementById('memory-add-form').hidden = true;
+        if (editKey) {
+            await invoke('profile_update', { key, value, category, confidence });
+        } else {
+            await invoke('profile_add', { key, value, factType: type, confidence, category });
+        }
+        hideMemoryForm();
         await loadMemoryItems();
     } catch (err) {
-        console.error('[Memory] 添加失败:', err);
-        alert('添加失败：' + err);
+        console.error('[Memory] 保存失败:', err);
+        alert('保存失败：' + err);
     }
 }

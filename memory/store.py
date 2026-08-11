@@ -143,13 +143,17 @@ class MemoryStore:
 
     # ===================== 档案卡人工管理（客户端记忆 UI） =====================
     def list_profile_items(self) -> dict:
-        """读取接口·供管理页展示：事实与偏好分栏（每项含 active 生效开关）。"""
+        """读取接口·供管理页展示：按 5 个板块分组（每项含 active 生效开关 + category）。"""
+        from .profile import CATEGORIES, _CAT_ORDER, category_of
         facts = self.load_profile().get("facts", {})
-        items = []
+        buckets = {c: [] for c in _CAT_ORDER}
         for k, v in facts.items():
             if v.get("type") == "event":
                 continue
-            items.append({
+            cat = v.get("category") or category_of(k) or "user"
+            if cat not in buckets:
+                cat = "user"
+            buckets[cat].append({
                 "key": k,
                 "value": v.get("value"),
                 "type": v.get("type") or "fact",
@@ -157,10 +161,11 @@ class MemoryStore:
                 "active": v.get("active", True),
                 "updated_at": v.get("updated_at"),
             })
-        return {
-            "facts": [i for i in items if i["type"] != "preference"],
-            "preferences": [i for i in items if i["type"] == "preference"],
-        }
+        categories = []
+        for c in _CAT_ORDER:
+            name, _prefix, desc = CATEGORIES[c]
+            categories.append({"id": c, "name": name, "desc": desc, "items": buckets[c]})
+        return {"categories": categories}
 
     def toggle_profile_item(self, key: str, active: bool) -> bool:
         """写入接口·生效/停用一条档案事实（停用后不再注入 system）。"""
@@ -186,23 +191,51 @@ class MemoryStore:
         return True
 
     def add_profile_item(self, key: str, value, fact_type: str = "fact",
-                         confidence: float = 0.9) -> tuple:
-        """写入接口·新增一条自定义事实/偏好（成功返回 (True, "")）。"""
+                         confidence: float = 0.9, category: str = None) -> tuple:
+        """写入接口·新增一条档案项（category ∈ user/agent/pref/rule/schedule）。
+        key 自动规范化：带板块前缀 + 语义化小写下划线。"""
+        from .profile import normalize_key, guess_category
         key = (key or "").strip()
         value = str(value or "").strip()
         if not key or not value:
             return False, "key 和 value 都不能为空"
-        if fact_type not in ("fact", "preference"):
+        if fact_type not in ("fact", "preference", "role"):
             fact_type = "fact"
+        cat = (category or "").strip().lower()
+        if cat not in ("user", "agent", "pref", "rule", "schedule"):
+            cat = guess_category(key, value, fact_type)
+        key = normalize_key(key, cat)
         try:
             conf = float(confidence)
         except (TypeError, ValueError):
             conf = 0.9
         self.update_profile([{
             "key": key, "value": value, "confidence": conf,
-            "type": fact_type, "active": True,
+            "type": fact_type, "category": cat, "active": True,
         }])
         return True, ""
+
+    def update_profile_item(self, key: str, value: str = None,
+                            category: str = None, confidence: float = None) -> bool:
+        """写入接口·编辑一条档案项（改内容/板块/置信度；key 不变）。"""
+        from .profile import normalize_key
+        profile = self.load_profile()
+        facts = profile.setdefault("facts", {})
+        if key not in facts:
+            return False
+        item = facts[key]
+        if value is not None and str(value).strip():
+            item["value"] = str(value).strip()
+        if category and category in ("user", "agent", "pref", "rule", "schedule"):
+            item["category"] = category
+        if confidence is not None:
+            try:
+                item["confidence"] = float(confidence)
+            except (TypeError, ValueError):
+                pass
+        item["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        self.save_profile(profile)
+        return True
 
     def search_profile(self, keyword: str) -> dict:
         """检索接口·档案卡：按关键词在 key/value 上做子串匹配，返回命中事实。"""

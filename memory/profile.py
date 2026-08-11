@@ -29,24 +29,88 @@ def canonical_key(key: str) -> str:
     return CANONICAL_KEYS.get(key, key)
 
 
+# ===================== v3 板块化（档案卡管理）=====================
+# 板块定义：category -> (中文名, key 前缀, 说明)
+CATEGORIES = {
+    "user":     ("用户身份", "user_",     "你的身份信息：姓名/年龄/身高/城市/学校等"),
+    "agent":    ("Agent设定", "agent_",   "小满的身份设定：名字/角色/性格/与你的关系"),
+    "pref":     ("用户偏好", "pref_",     "你的偏好：回答风格/称呼/饮食/游戏等"),
+    "rule":     ("行为规定", "rule_",     "你给小满定的行为规则：怎么说/怎么做"),
+    "schedule": ("主动触发", "schedule_", "小满主动关心你的时机：作息/健身/牛奶/天气提醒等"),
+}
+_PREFIX_TO_CAT = {v[1]: k for k, v in CATEGORIES.items()}
+_CAT_ORDER = ["user", "agent", "pref", "rule", "schedule"]
+
+# 兜底关键词：无前缀时按内容猜板块（供写入分类）
+_CAT_HINTS = {
+    "user": ["年龄", "岁", "身高", "cm", "体重", "kg", "城市", "学校", "大学", "专业",
+             "来自", "家乡", "性别", "语言", "职业", "姓名", "名字", "昵称"],
+    "agent": ["小满", "agent", "角色", "性格", "女儿", "风格", "关系", "身份"],
+    "pref": ["喜欢", "偏好", "爱", "习惯", "希望", "想"],
+    "rule": ["不要", "少用", "禁止", "记得", "要", "规定", "必须", "别", "请"],
+    "schedule": ["提醒", "每天", "几点", "时间", "到点", "准时", "作息", "睡", "起",
+                 "健身", "牛奶", "天气", "带伞", "防晒"],
+}
+
+
+def category_of(key: str) -> str:
+    """按 key 前缀判定板块；无前缀返回 ''。"""
+    k = (key or "").lower()
+    for prefix, cat in _PREFIX_TO_CAT.items():
+        if k.startswith(prefix):
+            return cat
+    return ""
+
+
+def guess_category(key: str, value: str, fact_type: str = "") -> str:
+    """写入时判定板块：先看 key 前缀，再按内容关键词兜底。"""
+    cat = category_of(key)
+    if cat:
+        return cat
+    text = f"{key} {value}"
+    text_l = text.lower()
+    # 按顺序检查（user 优先于 pref，避免"喜欢"等泛词误判）
+    for cat_name, hints in _CAT_HINTS.items():
+        if any(h in text_l or h in text for h in hints):
+            return cat_name
+    # 兜底：preference 类型 → pref；其余 → user
+    return "pref" if fact_type == "preference" else "user"
+
+
+def normalize_key(key: str, category: str = "") -> str:
+    """给 key 加板块前缀（若无）。返回规范 key。"""
+    key = (key or "").strip().lower().replace(" ", "_")
+    if not key:
+        return key
+    cat = category or category_of(key) or guess_category(key, "")
+    prefix = CATEGORIES.get(cat, ("", "", ""))[1]
+    if prefix and not key.startswith(prefix):
+        key = prefix + key.lstrip("_")
+    return key
+
+
 # 抽取提示词：抽两类高信号、稳定的用户记忆——事实 + 偏好/意图，明确禁止编造/猜测。
 EXTRACT_PROMPT = (
     "你是记忆抽取器。请从下面的对话中提取关于【用户】的以下内容：\n"
-    "A) 稳定客观事实：姓名、所在城市、职业、语言、正在做的项目/学习目标等；\n"
-    "B) 偏好与意图：对回答风格的要求（简洁/详细/带代码示例）、对技术的倾向、"
-    "明确表达的不满或要求、长期习惯等。\n"
+    "A) 用户身份信息：姓名、年龄、身高体重、城市、学校、专业、职业、语言等（category=user）；\n"
+    "B) Agent 身份设定：用户给小满设定的名字/角色/性格/风格/关系（category=agent）；\n"
+    "C) 用户偏好：回答风格、称呼、饮食、游戏、习惯等（category=pref）；\n"
+    "D) 行为规定：用户要求 agent 怎么说/怎么做（category=rule）；\n"
+    "E) 主动触发：用户作息/健身/牛奶/需要定时提醒的事（category=schedule）。\n"
     "规则：\n"
     "1) 只提取对话中明确说出的内容，禁止猜测或推断；\n"
     "2) 对每条给出 confidence（0~1），不确定就别提；\n"
     "3) 每条用 type 标注：事实填 \"fact\"，偏好/意图填 \"preference\"；\n"
-    "4) key 用语义化英文小写下划线，同一事实永远用同一个 key（例如：城市=city、学校=university、"
-    "饮食偏好=food_preference、作息=wake_time、回答风格=pref_answer_style、习惯=habit、名字=name），"
+    "4) key 必须带板块前缀且用语义化英文小写下划线："
+    "user_/agent_/pref_/rule_/schedule_（例如：user_city、user_age、agent_style、"
+    "pref_answer_style、rule_call、schedule_gym），同一事实永远用同一个 key，"
     "遇到同义内容复用已有 key，禁止为同一事实造新 key；\n"
-    "5) 不要抽取时间性/一次性内容为稳定事实（当前时间、当天/明天的计划、刚去过哪、一次性的活动），"
-    "除非用户明确说\"记住/以后都\"；\n"
+    "5) 不要抽取时间性/一次性内容为稳定事实（当前时间、当天/明天的计划、刚去过哪、一次性的活动、"
+    "项目开发记录），除非用户明确说\"记住/以后都\"；开发里程碑类请返回 category=schedule 的提醒规则，"
+    "或不要抽取；\n"
     "6) 返回 JSON，格式："
-    '{"facts":[{"key":"name","value":"小明","confidence":0.95,"type":"fact"},'
-    '{"key":"pref_answer_style","value":"要简洁、少废话","confidence":0.8,"type":"preference"}]}；'
+    '{"facts":[{"key":"user_city","value":"重庆","confidence":0.95,"type":"fact","category":"user"},'
+    '{"key":"pref_answer_style","value":"要简洁","confidence":0.8,"type":"preference","category":"pref"}]}；'
     "若没有可提取的内容，返回 {\"facts\":[]}。\n"
     "只返回 JSON，不要额外文字。"
 )
@@ -66,22 +130,24 @@ def merge_facts(profile, extracted):
     now = datetime.now().isoformat(timespec="seconds")
     changed = 0
     for item in extracted:
-        key = canonical_key(item.get("key"))   # 同义 key → 规范 key
+        raw_key = item.get("key") or ""
         value = item.get("value")
         conf = float(item.get("confidence", 1.0))
         ftype = item.get("type", "fact")
+        cat = item.get("category") or guess_category(raw_key, str(value or ""), ftype)
+        key = normalize_key(canonical_key(raw_key), cat)   # 同义归一 + 板块前缀
         if not key or value is None:
             continue
         old = facts.get(key)
         if old is None:
             # 全新事实，直接写入（默认生效）
             facts[key] = {"value": value, "confidence": conf, "type": ftype,
-                          "updated_at": now, "active": True}
+                          "category": cat, "updated_at": now, "active": True}
             changed += 1
         elif conf >= float(old.get("confidence", 0)):
             # latest-wins：新值置信度不低于旧值 → 覆盖（保留原生效开关状态）
             facts[key] = {"value": value, "confidence": conf, "type": ftype,
-                          "updated_at": now, "active": old.get("active", True)}
+                          "category": cat, "updated_at": now, "active": old.get("active", True)}
             changed += 1
         # 否则：新值置信度更低，保留旧值，跳过（防低置信度覆盖）
     return profile, changed
