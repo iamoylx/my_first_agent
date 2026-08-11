@@ -4,7 +4,7 @@
 
 > **记忆机制与数据彻底分离**：`memory/` 是纯机制代码（硬板接口），`memory_data/` 是纯本地记忆数据（硬盘），二者互不混杂。
 >
-> **进化路线见 `plan.md`**：阶段0「思考过程可视化」已实现（可折叠灰色思考轨迹）→ 阶段A（主动触发 / 生活 skill / 本地模型）→ 阶段B（MCP / 健康数据）→ 阶段C（微信 / 常驻化，待决策）。
+> **进化路线见 `plan.md`**：阶段0「思考过程可视化」✅ + 阶段A1「主动触发机制」✅（作息/健身/空闲关心 → 桌宠气泡+主窗口，免打扰，MCP/微信接口已预留）→ 阶段A2（生活 skill）→ 阶段A3（本地模型）→ 阶段B（MCP / 健康数据）→ 阶段C（微信 / 常驻化）。
 
 ---
 
@@ -62,7 +62,13 @@ skills/                       # 技能（自包含，注册即生效，主循环
 ├─ code_tools/                #   读文件/列目录/搜文件/搜内容/跑命令（含危险指令拦截）
 └─ web_search/                #   联网搜索（Tavily，URL 写死防 SSRF）
 tests/                        # 单元测试（不进仓库；用 temp 目录隔离，不污染真实记忆）
-logs/                         # ★思考过程黑匣子（thinking-YYYYMMDD.jsonl，运行时产物，不进仓库）
+logs/                         # ★运行黑匣子（thinking-YYYYMMDD.jsonl / active-YYYYMMDD.jsonl，运行时产物，不进仓库）
+active/                       # ★主动触发模块（阶段A1）：接口隔离，MCP/微信即插即用
+├─ scheduler.py               #   ActiveScheduler：周期 tick + 冷却去重 + 广播
+├─ sources.py                 #   事件源：ClockSource(作息/健身/牛奶) + IdleSource(空闲关心)
+├─ policy.py                  #   免打扰：前台全屏程序检测（ctypes，零依赖）
+├─ carriers.py                #   载体：Log(黑匣子) / WebSocket(桌宠+主窗口) / Toast(可选)
+└─ config.py                  #   配置：tick/冷却/规则（可 active/config.json 覆盖）
 素材/                          # 桌宠阶段遗留立绘（终端版不加载，保留备用，不进仓库）
 desktop-client/               # Tauri v2 桌面客户端（双窗口：主窗口 + 桌宠）
 ├─ agent-server.py            #   aiohttp 本地后端（:18789），桥接 core
@@ -155,6 +161,7 @@ npx tauri build             # 在 src-tauri/target/release 产出 agent-desktop.
 | 路由 | 方法 | 作用 |
 |------|------|------|
 | `/health` | GET | 健康检查 |
+| `/ws` | GET | WebSocket：主动触发消息推送（桌宠气泡 / 主窗口），只下发 |
 | `/chat` | POST | 非流式回复 `{reply, history_len, thinking}`（thinking=思考轨迹数组） |
 | `/chat/stream` | POST | SSE 流式（`{"token"}` 正文 + `{"type":"thinking"}` 轨迹事件） |
 | `/history` | GET | 当前会话历史 |
@@ -210,6 +217,7 @@ Rust 侧 Tauri Commands（前端 `invoke` 名）：`start_python_server` / `stop
 | 阶段 | 内容 | 状态 |
 |------|------|------|
 | 0 | 思考过程可视化（Thinking Trace：后端轨迹 + 前端折叠灰字 + 日志落盘） | 已完成 |
+| A1 | 主动触发机制（作息/健身/空闲关心 → 桌宠气泡+主窗口；全屏免打扰；MCP/微信接口预留） | 已完成 |
 | 1 | STM：token 滑动窗口 `prune()` | 已完成 |
 | 2 | LTM 结构化档案卡 + 离线抽取 | 已完成 |
 | 3 | MTM 跨重启续聊 | 已完成 |

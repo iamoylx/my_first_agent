@@ -94,8 +94,51 @@ document.addEventListener('DOMContentLoaded', () => {
     // 5 秒后隐藏点击提示
     setTimeout(() => clickHint?.classList.add('hidden'), 5000);
 
+    // 主动触发推送（阶段A1）：后端 /ws 推送 → 桌宠气泡
+    initActivePush();
+
     console.log('[Pet] Initialized, sprite:', SPRITE_URL);
 });
+
+// ============ 主动触发推送（阶段A1）============
+let activeWS = null;
+let activeWSPort = null;
+let activeWSRetry = null;
+
+function initActivePush() {
+    const invoke = getInvoke();
+    if (!invoke) { connectActiveWS('18789'); return; }
+    invoke('get_app_info')
+        .then(info => connectActiveWS((info && info.agent_port) || '18789'))
+        .catch(() => connectActiveWS('18789'));
+}
+
+function connectActiveWS(port) {
+    activeWSPort = port;
+    if (activeWSRetry) { clearTimeout(activeWSRetry); activeWSRetry = null; }
+    try {
+        activeWS = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    } catch (e) { scheduleActiveWSRetry(); return; }
+    activeWS.onmessage = (ev) => {
+        try {
+            const data = JSON.parse(ev.data);
+            if (data && data.type === 'active' && data.text) {
+                showBubble(data.text);
+                resetIdleTimer();
+            }
+        } catch (e) { /* 忽略坏帧 */ }
+    };
+    activeWS.onclose = () => scheduleActiveWSRetry();
+    activeWS.onerror = () => { try { activeWS.close(); } catch (e) {} };
+}
+
+function scheduleActiveWSRetry() {
+    if (activeWSRetry) return;
+    activeWSRetry = setTimeout(() => {
+        activeWSRetry = null;
+        if (activeWSPort) connectActiveWS(activeWSPort);
+    }, 3000);
+}
 
 // ============ 控制按钮 ============
 function initControls() {

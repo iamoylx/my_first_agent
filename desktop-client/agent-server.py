@@ -34,6 +34,7 @@ from skills.basic_tools import TOOLS as bt_tools, TOOL_MAP as bt_map
 from skills.code_tools import TOOLS as ct_tools, TOOL_MAP as ct_map
 from skills.memory_tools import TOOLS as mt_tools, TOOL_MAP as mt_map
 import core.agent_core as core
+import active
 
 # ============ 全局状态 ============
 # API Key 读自「用户级永久环境变量」（本机已配置 DEEPSEEK_API_KEY / TAVILY_API_KEY）。
@@ -57,6 +58,12 @@ tools, tool_map = collect_tools((ws_tools, ws_map), (bt_tools, bt_map),
 messages = None
 system_msg = None
 chat_lock = asyncio.Lock()   # 防止并发请求打乱消息顺序
+
+# ============ 主动触发（阶段A1）============
+# 调度器只读记忆；主动消息经 WS 载体推给桌宠/主窗口 + 日志黑匣子，不进会话。
+active_scheduler = active.ActiveScheduler(mem, log_dir=PROJECT_ROOT / "logs")
+ws_carrier = active.WebSocketCarrier()
+active_scheduler.register_carrier(ws_carrier)
 
 # ============ 思考轨迹黑匣子（运行时日志，不进记忆、不进仓库）============
 LOG_DIR = PROJECT_ROOT / "logs"
@@ -109,6 +116,9 @@ async def chat_handler(request):
         return web.json_response({"error": "empty message"}, status=400)
 
     async with chat_lock:
+        # 用户刚发消息：通知主动触发调度器（空闲源据此重置计时）
+        active_scheduler.on_user_activity()
+
         # 收集流式 token 到缓冲区 + 思考轨迹
         tokens_buffer = []
         thinking_trace = []
@@ -326,6 +336,23 @@ async def assets_proxy(request):
 
 
 
+async def ws_handler(request):
+    """GET /ws — WebSocket：桌宠/主窗口连接后接收主动触发消息。
+    只下发（服务端→前端），前端无需发送内容。
+    """
+    ws = web.WebSocketResponse(heartbeat=30)
+    await ws.prepare(request)
+    ws_carrier.add(ws)
+    try:
+        async for _msg in ws:
+            pass   # 前端单向接收，不处理上行
+    except Exception:
+        pass
+    finally:
+        ws_carrier.remove(ws)
+    return ws
+
+
 async def finalize_handler(request):
     """POST /finalize — 会话结束兜底：归档 + 离线抽取档案卡，完成后退出服务。
 
@@ -339,6 +366,11 @@ async def finalize_handler(request):
             result = {"status": "finalized", "changed": changed}
         except Exception as e:
             result = {"status": "error", "error": str(e)}
+    # 停止主动触发调度器
+    try:
+        await active_scheduler.stop()
+    except Exception:
+        pass
     loop = asyncio.get_running_loop()
     loop.call_later(1.0, loop.stop)
     return web.json_response(result)
@@ -372,6 +404,9 @@ def create_app():
     app.router.add_post("/profile/toggle", profile_toggle_handler)
     app.router.add_post("/profile/delete", profile_delete_handler)
     app.router.add_post("/profile/add", profile_add_handler)
+    # 主动触发 WebSocket（阶段A1）
+    app.router.add_get("/ws", ws_handler)
+
     # 素材静态代理
     app.router.add_get("/assets/{path:.*}", assets_proxy)
     # CORS
@@ -404,7 +439,9 @@ if __name__ == "__main__":
         await runner.setup()
         site = web.TCPSite(runner, "127.0.0.1", PORT)
         await site.start()
-        print(f"[Agent Server] 服务已启动: http://127.0.0.1:{PORT}")
+        # 启动主动触发调度器（周期 tick）
+        await active_scheduler.start()
+        print(f"[Agent Server] 服务已启动: http://127.0.0.1:{PORT}  (主动触发: 开)")
         return runner
 
     runner = None
