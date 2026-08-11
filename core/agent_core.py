@@ -254,13 +254,30 @@ async def detect_tool_call(messages: list, tools: list, api_key: str) -> dict:
 
 
 # ===================== 2. 流式：最终回答逐字回调（LangChain astream）=====================
-async def stream_final(messages: list, api_key: str, on_token=None, on_reasoning=None) -> str:
+
+
+def _notify_stripped_dsml(text: str, on_stripped_dsml) -> None:
+    """若 text 里含被剥离的 DSML 工具调用，回调出去（供上层执行+续写结尾）。"""
+    if not on_stripped_dsml or not text:
+        return
+    try:
+        calls = _extract_dsml_tool_calls(text)
+        if calls:
+            on_stripped_dsml(calls)
+    except Exception:
+        pass
+
+
+async def stream_final(messages: list, api_key: str, on_token=None, on_reasoning=None,
+                    on_stripped_dsml=None) -> str:
     """用 LangChain astream 流式输出最终回答；每收到一个字调用 on_token(chunk)。返回完整文本。
 
     双保险清洗：模型偶尔会在最终回答里夹带 <invoke>/<parameter>/DSML 标记，
     这里逐块剥离后再回调，绝不把内部标记原样漏给用户。
     on_reasoning(text) 可选：若模型走 thinking 模式（DeepSeek/Qwen 兼容层的
     reasoning_content），把推理增量实时转发（捕获不到则静默跳过，不影响主流程）。
+    on_stripped_dsml(calls) 可选：若剥离掉了 DSML 工具调用（模型在正文里夹带工具、
+    会导致正文被拦腰截断），把解析出的调用回调出去，由上层执行工具并续写结尾。
     """
     llm = _get_llm(api_key)
     lc_msgs = _to_lc_messages(messages)
@@ -288,6 +305,7 @@ async def stream_final(messages: list, api_key: str, on_token=None, on_reasoning
         emit = pending[:cut] if cut != -1 else pending
         pending = pending[cut:] if cut != -1 else ""
         if emit:
+            _notify_stripped_dsml(emit, on_stripped_dsml)
             safe = _strip_dsml(emit)
             if safe:
                 if on_token:
@@ -295,6 +313,7 @@ async def stream_final(messages: list, api_key: str, on_token=None, on_reasoning
                 full_text += safe
     # 收尾：把残留缓冲也清洗后输出
     if pending:
+        _notify_stripped_dsml(pending, on_stripped_dsml)
         safe = _strip_dsml(pending)
         if safe:
             if on_token:
@@ -462,6 +481,7 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
         _think("memory", "已刷新记忆上下文（人格设定 + 用户档案）")
 
     final_override = None
+    answer = None   # detect 直接产出的最终回答；None 表示需要 stream_final 补生成
     try:
         # ---- 工具调用循环（带轮数上限，防止死循环 / 模型反复探索）----
         tool_rounds = 0
@@ -529,16 +549,72 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                     })
                 continue
             else:
+                # 无工具调用：detect 已生成完整回答，直接采用。
+                # （避免"detect 生成一次 → stream_final 再生成一次"的重复调用，
+                #   也避免二次生成时模型夹带 DSML 把正文拦腰截断。）
+                answer = content or None
+                if answer and on_token:
+                    on_token(answer)   # 一次性回调完整回答（前端本就模拟打字）
                 break
 
-        # ---- 流式输出最终回答（DSML 无法解析分支已在上面直接落盘）----
-        if final_override is None:
+        # ---- 流式输出最终回答（detect 未产出正文时才需要）----
+        if final_override is None and answer is None:
             _think("generate", "开始生成最终回答…")
             def _on_reason(r):
                 _think("reason", r)
+            stripped_calls = []
+            def _on_stripped(calls):
+                for c in calls:
+                    key = (c.get("function", {}).get("name"),
+                           c.get("function", {}).get("arguments"))
+                    if key not in stripped_calls:
+                        stripped_calls.append(c)
             answer = await stream_final(messages, api_key, on_token=on_token,
-                                        on_reasoning=_on_reason)
-            messages.append({"role": "assistant", "content": answer})
+                                        on_reasoning=_on_reason,
+                                        on_stripped_dsml=_on_stripped)
+            # 兜底：最终回答夹带 DSML 工具调用被剥离 → 执行工具并让模型续写结尾，
+            # 避免用户看到"…的时候了："这类冒号后没内容的截断回复。
+            if stripped_calls:
+                try:
+                    for call in stripped_calls[:2]:
+                        func_info = call.get("function") or {}
+                        func_name = func_info.get("name") or ""
+                        try:
+                            args = json.loads(func_info.get("arguments") or "{}")
+                        except json.JSONDecodeError:
+                            args = {}
+                        func = tool_map.get(func_name)
+                        if func is None:
+                            tool_result = f"错误：未知工具 {func_name}"
+                        else:
+                            try:
+                                tool_result = await _call_tool(func, args, mem)
+                            except TypeError as e:
+                                tool_result = f"错误：参数不合法 - {e}"
+                        _think("tool_result", f"{func_name} 返回：{_truncate(str(tool_result), 200)}")
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": call.get("id", f"strip_{len(messages)}"),
+                            "content": str(tool_result),
+                        })
+                    _think("defense", "最终回答夹带工具调用，已执行并续写结尾")
+                    messages.append({
+                        "role": "system",
+                        "content": ("（你的上一条回复在工具调用处被截断了：请直接基于上面的工具结果，"
+                                    "用一两句话把结尾说完；不要重复已说过的内容，也不要再调用任何工具。）"),
+                    })
+                    tail = await stream_final(messages, api_key, on_token=on_token,
+                                              on_reasoning=_on_reason)
+                    messages.pop()   # 移除临时 system，不污染历史
+                    messages[-1]["content"] = (messages[-1]["content"] or "") + tail
+                    answer = messages[-1]["content"]
+                except Exception:
+                    pass
+        if final_override is not None:
+            answer = final_override
+        if answer is None:
+            answer = ""
+        messages.append({"role": "assistant", "content": answer})
 
         # ---- 增量抽取缓冲（写读分离，离线真正抽取在 finalize）----
         mem.buffer_round(user_text, answer)
