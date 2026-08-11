@@ -13,11 +13,12 @@ from datetime import datetime
 from .carriers import LogCarrier
 from .config import load_config
 from .policy import DoNotDisturbPolicy
-from .sources import ClockSource, IdleSource
+from .sources import ClockSource, IdleSource, ReminderSource
 
 
 class ActiveScheduler:
-    def __init__(self, mem, config: dict = None, log_dir=None):
+    def __init__(self, mem, config: dict = None, log_dir=None,
+                 task_dir=None, task_user_id="default"):
         self.config = config or load_config()
         self.mem = mem
         self._carriers = [LogCarrier(log_dir)]
@@ -28,6 +29,14 @@ class ActiveScheduler:
             self._sources.append(ClockSource(mem, self.config))
         if sources_cfg.get("idle", {}).get("enabled", True):
             self._sources.append(IdleSource(sources_cfg.get("idle", {}) or {}))
+        # 提醒任务源（独立 task_data/，与记忆分离）
+        if task_dir:
+            try:
+                from skills.reminder_tools.store import TaskStore
+                self._task_store = TaskStore(base_dir=task_dir, user_id=task_user_id)
+                self._sources.append(ReminderSource(self._task_store))
+            except Exception:
+                self._task_store = None
         self._fired = {}       # trigger.id -> 上次触发 ts
         self._task = None
         self._tick_seconds = max(1, int(self.config.get("tick_seconds", 20)))

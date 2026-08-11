@@ -71,7 +71,7 @@
   - 全屏检测：Win32 `GetForegroundWindow` + 与屏幕尺寸比对（轮询即可，成本低）
 - 参考案例：QClaw 私人教练定时监督、飞书 AI 活动提醒 agent、proactive-nudge（OpenClaw 生态）
 
-### A2. 生活类 skill（注册即生效）
+### A2. 生活类 skill（注册即生效）✅ 已完成 2026-08-11（reminder/todo：对话生成任务→到点触发；TaskStore 独立存储 task_data/；ClockSource 动态刷新档案）
 - `weather`：专门城市天气工具（重邮/江西，替代泛搜）
 - `reminder` / `todo`：存待办 → 主动触发用
 - `health_record`：手动记录睡眠/体重/步数 → 进 MemoryStore `events`（为健康 MCP 打底）
@@ -168,4 +168,4 @@
 3. [ ] 本地模型：先装 Qwen3-8B（工具调用稍强）还是 Qwen2.5-7B（更稳更快）？
 4. [ ] 主动触发的提醒内容范围：作息/待办/健康/天气，先做哪几类？
 
-> 执行顺序建议：**阶段0(思考可视化)✅ → A1(主动触发+全屏检测)✅已完成 → A2(生活skill) → A3(本地模型) → B1(MCP框架) → B2(健康数据，随手表) → C(微信/常驻化，随决策)**
+> 执行顺序建议：**阶段0(思考可视化)✅ → A1(主动触发+全屏检测)✅ → A2(提醒任务 reminder/todo)✅已完成 → A3(本地模型) → B1(MCP框架) → B2(健康数据，随手表) → C(微信/常驻化，随决策)**

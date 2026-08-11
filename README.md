@@ -4,7 +4,7 @@
 
 > **记忆机制与数据彻底分离**：`memory/` 是纯机制代码（硬板接口），`memory_data/` 是纯本地记忆数据（硬盘），二者互不混杂。
 >
-> **进化路线见 `plan.md`**：阶段0「思考过程可视化」✅ + 阶段A1「主动触发机制」✅（作息/健身/空闲关心 → 桌宠气泡+主窗口，免打扰，MCP/微信接口已预留）→ 阶段A2（生活 skill）→ 阶段A3（本地模型）→ 阶段B（MCP / 健康数据）→ 阶段C（微信 / 常驻化）。
+> **进化路线见 `plan.md`**：阶段0「思考过程可视化」✅ + 阶段A1「主动触发机制」✅ + 阶段A2「提醒任务（reminder/todo）」✅（对话生成任务→到点桌宠提醒；作息档案动态刷新）→ 阶段A3（本地模型）→ 阶段B（MCP / 健康数据）→ 阶段C（微信 / 常驻化）。
 
 ---
 
@@ -63,6 +63,7 @@ skills/                       # 技能（自包含，注册即生效，主循环
 └─ web_search/                #   联网搜索（Tavily，URL 写死防 SSRF）
 tests/                        # 单元测试（不进仓库；用 temp 目录隔离，不污染真实记忆）
 logs/                         # ★运行黑匣子（thinking-YYYYMMDD.jsonl / active-YYYYMMDD.jsonl，运行时产物，不进仓库）
+task_data/                    # 提醒任务数据（本地运行时数据，与记忆分离，不进仓库）
 active/                       # ★主动触发模块（阶段A1）：接口隔离，MCP/微信即插即用
 ├─ scheduler.py               #   ActiveScheduler：周期 tick + 冷却去重 + 广播
 ├─ sources.py                 #   事件源：ClockSource(作息/健身/牛奶) + IdleSource(空闲关心)
@@ -144,7 +145,9 @@ npx tauri build             # 在 src-tauri/target/release 产出 agent-desktop.
 
 每个技能对外暴露 `TOOLS`（给 LLM 的 schema）与 `TOOL_MAP`（可调函数）。`skills.collect_tools(*pairs)` 聚合成统一清单，主循环分发逻辑零改动。
 
-当前注册（9 个）：`web_search` / `get_current_time` / `calculator` / `read_file` / `list_dir` / `search_files` / `search_content` / `run_command` / `write_memory`。
+当前注册（12 个）：`web_search` / `get_current_time` / `calculator` / `read_file` / `list_dir` / `search_files` / `search_content` / `run_command` / `write_memory` / `create_reminder` / `list_reminders` / `delete_reminder`。
+
+- `reminder_tools`：对话中「提醒我明天下午3点开会」→ `create_reminder` 存任务 → `ReminderSource` 到点主动提醒（任务存独立 `task_data/`，与记忆完全分离）。
 
 - `web_search`：URL 写死 `https://api.tavily.com/search`，Key 仅读 `TAVILY_API_KEY`（防 SSRF / 投毒）。
 - `code_tools`：`run_command` 经 `_DENY` 正则拦截 `rm -rf` / `format` / `shutdown` / `sudo` / `curl|sh` 等高危指令；文件类工具相对路径按项目根解析。
@@ -218,6 +221,7 @@ Rust 侧 Tauri Commands（前端 `invoke` 名）：`start_python_server` / `stop
 |------|------|------|
 | 0 | 思考过程可视化（Thinking Trace：后端轨迹 + 前端折叠灰字 + 日志落盘） | 已完成 |
 | A1 | 主动触发机制（作息/健身/空闲关心 → 桌宠气泡+主窗口；全屏免打扰；MCP/微信接口预留） | 已完成 |
+| A2 | 提醒任务 reminder/todo（对话生成任务→到点触发；TaskStore 独立存储；ClockSource 动态刷新档案） | 已完成 |
 | 1 | STM：token 滑动窗口 `prune()` | 已完成 |
 | 2 | LTM 结构化档案卡 + 离线抽取 | 已完成 |
 | 3 | MTM 跨重启续聊 | 已完成 |

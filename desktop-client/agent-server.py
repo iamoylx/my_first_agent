@@ -33,6 +33,8 @@ from skills.web_search import TOOLS as ws_tools, TOOL_MAP as ws_map
 from skills.basic_tools import TOOLS as bt_tools, TOOL_MAP as bt_map
 from skills.code_tools import TOOLS as ct_tools, TOOL_MAP as ct_map
 from skills.memory_tools import TOOLS as mt_tools, TOOL_MAP as mt_map
+from skills.reminder_tools import TOOLS as rt_tools, TOOL_MAP as rt_map
+from skills.reminder_tools.store import TaskStore
 import core.agent_core as core
 import active
 
@@ -52,7 +54,8 @@ mem = MemoryStore(base_dir=os.getenv("AGENT_MEMORY_DIR") or None,
                   user_id=os.getenv("AGENT_USER_ID", "default"))
 
 tools, tool_map = collect_tools((ws_tools, ws_map), (bt_tools, bt_map),
-                                (ct_tools, ct_map), (mt_tools, mt_map))
+                                (ct_tools, ct_map), (mt_tools, mt_map),
+                                (rt_tools, rt_map))
 
 # 当前会话 messages（内存中，启动时从记忆恢复）
 messages = None
@@ -61,7 +64,12 @@ chat_lock = asyncio.Lock()   # 防止并发请求打乱消息顺序
 
 # ============ 主动触发（阶段A1）============
 # 调度器只读记忆；主动消息经 WS 载体推给桌宠/主窗口 + 日志黑匣子，不进会话。
-active_scheduler = active.ActiveScheduler(mem, log_dir=PROJECT_ROOT / "logs")
+TASK_DIR = Path(os.getenv("AGENT_TASK_DIR") or (PROJECT_ROOT / "task_data"))
+task_store = TaskStore(base_dir=TASK_DIR,
+                     user_id=os.getenv("AGENT_USER_ID", "default"))
+active_scheduler = active.ActiveScheduler(mem, log_dir=PROJECT_ROOT / "logs",
+                                          task_dir=TASK_DIR,
+                                          task_user_id=os.getenv("AGENT_USER_ID", "default"))
 ws_carrier = active.WebSocketCarrier()
 active_scheduler.register_carrier(ws_carrier)
 
@@ -139,6 +147,7 @@ async def chat_handler(request):
                 api_key=API_KEY,
                 on_token=on_token,
                 on_thinking=on_thinking,
+                task_store=task_store,
             )
             reply = "".join(tokens_buffer)
             _log_thinking(user_text, thinking_trace)
@@ -203,6 +212,7 @@ async def chat_stream_handler(request):
                 api_key=API_KEY,
                 on_token=sse_send,
                 on_thinking=_collect,
+                task_store=task_store,
             )
             _log_thinking(user_text, thinking_trace)
             await response.write(b"data: [DONE]\n\n")

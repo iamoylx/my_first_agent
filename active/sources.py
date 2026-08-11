@@ -110,6 +110,7 @@ class ClockSource(TriggerSource):
 
     def __init__(self, mem, config: dict):
         self.mem = mem
+        self.config = config
         self.rules = self._build_rules(config)
 
     def _build_rules(self, config: dict) -> list:
@@ -163,6 +164,8 @@ class ClockSource(TriggerSource):
         return rules
 
     def check(self, now: datetime):
+        # 动态刷新：每次 tick 从档案重新解析规则，聊天中更新作息即时生效（无需重启）
+        self.rules = self._build_rules(self.config)
         hm = now.strftime("%H:%M")
         for r in self.rules:
             if r["time"] == hm:
@@ -197,3 +200,26 @@ class IdleSource(TriggerSource):
                 ts=now,
             )
         return None
+
+
+class ReminderSource(TriggerSource):
+    """提醒任务源：读取 TaskStore，到点任务触发一次（一次性标记完成 / 重复任务自动推进）。"""
+    name = "reminder"
+
+    def __init__(self, task_store):
+        self.store = task_store
+
+    def check(self, now: datetime):
+        if self.store is None:
+            return None
+        due = self.store.due(now)
+        if not due:
+            return None
+        t = due[0]
+        rep = {"daily": "（每天）", "weekly": "（每周）"}.get(t.get("repeat"), "")
+        return Trigger(
+            id=f"reminder_{t.get('id')}",
+            kind="reminder",
+            text=f"⏰ 爸爸，提醒你：{t.get('reminder')}{rep}",
+            ts=now,
+        )

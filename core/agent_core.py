@@ -364,8 +364,10 @@ def _build_system_content(mem: MemoryStore, now: datetime = None) -> str:
                  f"{now.hour:02d}:{now.minute:02d}（{WEEKDAYS[now.weekday()]}）")
     persona = _build_persona(profile)
     system_content = persona
-    system_content += ("\n\n你可以调用工具：查询时间、计算、联网搜索、查看项目代码、读写长期记忆。"
+    system_content += ("\n\n你可以调用工具：查询时间、计算、联网搜索、查看项目代码、读写长期记忆、创建提醒任务。"
                        "用户明确要求「记住 / 记下来 / 写进记忆 / 存档」时，直接用 write_memory 工具，不要翻代码。"
+                       "用户说「提醒我 / 到点叫我 / 记得提醒 / 明天下午三点提醒我开会」这类话时，"
+                       "用 create_reminder 工具创建提醒任务（when 按当前时间推算绝对时间）。"
                        "\n" + date_line)
     if profile_text:
         system_content += "\n\n[用户档案]\n" + profile_text
@@ -421,13 +423,18 @@ def build_initial_messages(mem: MemoryStore, with_history: bool = True) -> tuple
     return messages, system_msg
 
 
-async def _call_tool(func, args: dict, mem):
-    """调用工具函数；若函数签名声明了 mem 参数，则注入当前 MemoryStore（供记忆类工具使用）。"""
+async def _call_tool(func, args: dict, mem, task_store=None):
+    """调用工具函数；按签名注入依赖：mem=MemoryStore，task_store=TaskStore（提醒任务）。"""
     try:
         if "mem" in inspect.signature(func).parameters:
             return await func(mem=mem, **args)
     except (TypeError, ValueError):
         pass  # 拿不到签名就走普通调用
+    try:
+        if task_store is not None and "task_store" in inspect.signature(func).parameters:
+            return await func(task_store=task_store, **args)
+    except (TypeError, ValueError):
+        pass
     return await func(**args)
 
 
@@ -449,7 +456,7 @@ def _format_tool_call(name, args):
 
 async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                        tools: list, tool_map: dict, api_key: str,
-                       on_token=None, on_thinking=None) -> list:
+                       on_token=None, on_thinking=None, task_store=None) -> list:
     """处理一次用户输入的完整流程：工具调用循环 + 流式最终回答 + 抽取缓冲 + 落盘。
     返回更新后的 messages。
     on_token(chunk) 在每个流式字上触发（首个 chunk 到达即代表 TALKING 开始）。
@@ -538,7 +545,7 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                         tool_result = f"错误：未知工具 {func_name}"
                     else:
                         try:
-                            tool_result = await _call_tool(func, args, mem)
+                            tool_result = await _call_tool(func, args, mem, task_store)
                         except TypeError as e:
                             tool_result = f"错误：参数不合法 - {e}"
                     _think("tool_result", f"{func_name} 返回：{_truncate(str(tool_result), 200)}")
@@ -588,7 +595,7 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                             tool_result = f"错误：未知工具 {func_name}"
                         else:
                             try:
-                                tool_result = await _call_tool(func, args, mem)
+                                tool_result = await _call_tool(func, args, mem, task_store)
                             except TypeError as e:
                                 tool_result = f"错误：参数不合法 - {e}"
                         _think("tool_result", f"{func_name} 返回：{_truncate(str(tool_result), 200)}")
