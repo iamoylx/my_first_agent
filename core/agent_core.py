@@ -254,17 +254,28 @@ async def detect_tool_call(messages: list, tools: list, api_key: str) -> dict:
 
 
 # ===================== 2. 流式：最终回答逐字回调（LangChain astream）=====================
-async def stream_final(messages: list, api_key: str, on_token=None) -> str:
+async def stream_final(messages: list, api_key: str, on_token=None, on_reasoning=None) -> str:
     """用 LangChain astream 流式输出最终回答；每收到一个字调用 on_token(chunk)。返回完整文本。
 
     双保险清洗：模型偶尔会在最终回答里夹带 <invoke>/<parameter>/DSML 标记，
     这里逐块剥离后再回调，绝不把内部标记原样漏给用户。
+    on_reasoning(text) 可选：若模型走 thinking 模式（DeepSeek/Qwen 兼容层的
+    reasoning_content），把推理增量实时转发（捕获不到则静默跳过，不影响主流程）。
     """
     llm = _get_llm(api_key)
     lc_msgs = _to_lc_messages(messages)
     full_text = ""
     pending = ""   # 尾部缓冲：避免把"半截标签"漏出去（等标签闭合后再一起清洗）
     async for chunk in llm.astream(lc_msgs):
+        # 捕获模型推理增量（thinking 模式的 reasoning_content）
+        if on_reasoning:
+            try:
+                extra = getattr(chunk, "additional_kwargs", None) or {}
+                r = extra.get("reasoning_content")
+                if isinstance(r, str) and r:
+                    on_reasoning(r)
+            except Exception:
+                pass
         content = chunk.content
         if not isinstance(content, str) or not content:
             continue
@@ -402,22 +413,60 @@ async def _call_tool(func, args: dict, mem):
 
 
 # ===================== 4. 处理一轮用户输入（核心流程） =====================
+def _truncate(text, limit=200):
+    """思考轨迹展示用：单行化 + 截断，避免把超长工具参数/结果刷屏。"""
+    text = (text or "").strip().replace("\n", " ").replace("\r", "")
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _format_tool_call(name, args):
+    """把工具调用格式化成一行思考轨迹（参数截断）。"""
+    try:
+        parts = [f"{k}={_truncate(str(v), 60)}" for k, v in (args or {}).items()]
+        return f"调用工具 {name}（{', '.join(parts) or '无参数'}）"
+    except Exception:
+        return f"调用工具 {name}"
+
+
 async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                        tools: list, tool_map: dict, api_key: str,
-                       on_token=None) -> list:
+                       on_token=None, on_thinking=None) -> list:
     """处理一次用户输入的完整流程：工具调用循环 + 流式最终回答 + 抽取缓冲 + 落盘。
     返回更新后的 messages。
     on_token(chunk) 在每个流式字上触发（首个 chunk 到达即代表 TALKING 开始）。
+    on_thinking(ev) 在关键决策节点触发思考轨迹：ev = {"kind": ..., "text": ...}
+      kind ∈ memory / reason / defense / tool / tool_result / generate。
+    思考轨迹只做展示/落盘，绝不进入 messages，不改变任何记忆写入。
     """
+    def _think(kind, text):
+        if on_thinking:
+            try:
+                on_thinking({"kind": kind, "text": text})
+            except Exception:
+                pass
+
     # 及时生效：每轮先刷新 system，让上一轮对话中写入档案的记忆进入上下文
     _refresh_system_context(messages, mem)
     messages.append({"role": "user", "content": user_text})
+
+    # 思考轨迹：记忆上下文注入
+    try:
+        profile = mem.load_profile()
+        facts = profile.get("facts", {}) or {}
+        active_count = sum(
+            1 for v in facts.values()
+            if isinstance(v, dict) and v.get("active") is not False
+        )
+        _think("memory", f"已刷新记忆上下文：人格设定 + 用户档案（{active_count} 条事实/偏好生效）")
+    except Exception:
+        _think("memory", "已刷新记忆上下文（人格设定 + 用户档案）")
 
     final_override = None
     try:
         # ---- 工具调用循环（带轮数上限，防止死循环 / 模型反复探索）----
         tool_rounds = 0
         while True:
+            _think("reason", "判断本轮是否需要调用工具…")
             ai_msg = await detect_tool_call(messages, tools, api_key)
             content = ai_msg.get("content") or ""
             # 防御：模型偶尔把工具调用写成 DSML 文本塞进 content（而非原生 tool_calls）。
@@ -428,6 +477,7 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                     # 转成原生 tool_calls 执行；清理 content 去掉内部标记
                     ai_msg["tool_calls"] = dsml_calls
                     ai_msg["content"] = _strip_dsml(content) or None
+                    _think("defense", "识别到 DSML 工具调用标记，已纠正为原生工具调用")
                 else:
                     # 识别到 DSML 标记但解析不出工具：清掉标记后让模型重试，
                     # 避免把"先调用一下工具…"这类半截话直接当成最终回答。
@@ -442,6 +492,7 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                             "content": "（工具调用解析异常，请停止调用工具，直接给出最终回答。）",
                         })
                         break
+                    _think("defense", "识别到工具调用标记但解析失败，清空标记后让模型重试")
                     continue
             if ai_msg.get("tool_calls"):
                 tool_rounds += 1
@@ -462,6 +513,7 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                     except json.JSONDecodeError:
                         args = {}
                     func = tool_map.get(func_name)
+                    _think("tool", _format_tool_call(func_name, args))
                     if func is None:
                         tool_result = f"错误：未知工具 {func_name}"
                     else:
@@ -469,6 +521,7 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                             tool_result = await _call_tool(func, args, mem)
                         except TypeError as e:
                             tool_result = f"错误：参数不合法 - {e}"
+                    _think("tool_result", f"{func_name} 返回：{_truncate(str(tool_result), 200)}")
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call_id,
@@ -480,7 +533,11 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
 
         # ---- 流式输出最终回答（DSML 无法解析分支已在上面直接落盘）----
         if final_override is None:
-            answer = await stream_final(messages, api_key, on_token=on_token)
+            _think("generate", "开始生成最终回答…")
+            def _on_reason(r):
+                _think("reason", r)
+            answer = await stream_final(messages, api_key, on_token=on_token,
+                                        on_reasoning=_on_reason)
             messages.append({"role": "assistant", "content": answer})
 
         # ---- 增量抽取缓冲（写读分离，离线真正抽取在 finalize）----

@@ -358,6 +358,72 @@ html, body {
     border: none;
 }
 
+/* ============ 思考过程折叠块（阶段0：Thinking Trace）============ */
+.thinking-block {
+    align-self: flex-start;
+    max-width: 85%;
+    margin: 2px 0 2px 38px;   /* 与 AI 气泡对齐（头像 30px + 间距 8px） */
+}
+
+.thinking-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: transparent;
+    border: none;
+    padding: 2px 8px;
+    border-radius: 10px;
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: pointer;
+    transition: color var(--transition-fast), background var(--transition-fast);
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+.thinking-toggle:hover,
+.thinking-toggle.open {
+    color: var(--text-secondary);
+    background: rgba(0, 0, 0, 0.04);
+}
+
+.thinking-arrow {
+    font-size: 10px;
+    transition: transform 0.15s var(--ease-out);
+}
+
+.thinking-toggle.open .thinking-arrow {
+    transform: rotate(90deg);
+}
+
+.thinking-body {
+    margin: 6px 0 8px 4px;
+    padding: 8px 12px;
+    background: rgba(0, 0, 0, 0.035);
+    border-left: 2px solid rgba(0, 0, 0, 0.10);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.7;
+    max-height: 260px;
+    overflow-y: auto;
+}
+
+.thinking-line {
+    margin: 2px 0;
+    word-break: break-word;
+    white-space: pre-wrap;
+}
+
+.thinking-kind {
+    display: inline-block;
+    min-width: 72px;
+    margin-right: 8px;
+    color: #b0abbd;
+    font-weight: 600;
+    font-size: 11px;
+}
+
 /* AI 回复中的打字动画 */
 .typing-cursor::after {
     content: '▌';

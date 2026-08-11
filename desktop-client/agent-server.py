@@ -58,6 +58,25 @@ messages = None
 system_msg = None
 chat_lock = asyncio.Lock()   # 防止并发请求打乱消息顺序
 
+# ============ 思考轨迹黑匣子（运行时日志，不进记忆、不进仓库）============
+LOG_DIR = PROJECT_ROOT / "logs"
+
+
+def _log_thinking(user_text: str, trace: list) -> None:
+    """把本轮思考轨迹追加写入 logs/thinking-YYYYMMDD.jsonl。
+    纯展示/排障用：不触碰 memory_data/，不改变任何记忆写入。
+    """
+    if not trace:
+        return
+    try:
+        LOG_DIR.mkdir(exist_ok=True)
+        day = time.strftime("%Y%m%d")
+        line = {"ts": round(time.time(), 3), "user": user_text, "trace": trace}
+        with open(LOG_DIR / f"thinking-{day}.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(line, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
 
 async def init_session():
     """构建初始会话（恢复历史 + 注入档案）。"""
@@ -90,11 +109,15 @@ async def chat_handler(request):
         return web.json_response({"error": "empty message"}, status=400)
 
     async with chat_lock:
-        # 收集流式 token 到缓冲区
+        # 收集流式 token 到缓冲区 + 思考轨迹
         tokens_buffer = []
+        thinking_trace = []
 
         def on_token(chunk):
             tokens_buffer.append(chunk)
+
+        def on_thinking(ev):
+            thinking_trace.append(ev)
 
         try:
             messages = await core.process_turn(
@@ -105,11 +128,14 @@ async def chat_handler(request):
                 tool_map=tool_map,
                 api_key=API_KEY,
                 on_token=on_token,
+                on_thinking=on_thinking,
             )
             reply = "".join(tokens_buffer)
+            _log_thinking(user_text, thinking_trace)
             return web.json_response({
                 "reply": reply,
                 "history_len": len(messages),
+                "thinking": thinking_trace,
             })
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -149,6 +175,15 @@ async def chat_stream_handler(request):
                 chunk = json.dumps({"token": token}, ensure_ascii=False)
                 await response.write(f"data: {chunk}\n\n".encode("utf-8"))
 
+            async def sse_thinking(ev):
+                chunk = json.dumps({"type": "thinking", "data": ev}, ensure_ascii=False)
+                await response.write(f"data: {chunk}\n\n".encode("utf-8"))
+
+            thinking_trace = []
+            def _collect(ev):
+                thinking_trace.append(ev)
+                asyncio.ensure_future(sse_thinking(ev))
+
             messages = await core.process_turn(
                 messages=messages,
                 user_text=user_text,
@@ -157,7 +192,9 @@ async def chat_stream_handler(request):
                 tool_map=tool_map,
                 api_key=API_KEY,
                 on_token=sse_send,
+                on_thinking=_collect,
             )
+            _log_thinking(user_text, thinking_trace)
             await response.write(b"data: [DONE]\n\n")
         except Exception as e:
             err = json.dumps({"error": str(e)}, ensure_ascii=False)

@@ -134,6 +134,9 @@ async function sendMessage() {
             appendMessage(`[错误] ${data.error}`, 'system');
             notifyPetState('idle');
         } else if (data.reply) {
+            if (Array.isArray(data.thinking) && data.thinking.length > 0) {
+                appendThinkingBlock(data.thinking);
+            }
             await typeMessage(data.reply, 'ai');
             notifyPetState('response_done');
         }
@@ -202,6 +205,55 @@ async function typeMessage(text, role) {
 
     bubble.innerHTML = displayed.replace(/\n/g, '<br>');
     bubble.classList.remove('typing-cursor');
+}
+
+/**
+ * 渲染「💭 思考过程」可折叠块（灰色小字，点击展开/收起）
+ * trace: [{kind, text}, ...] — 来自后端 /chat 的 thinking 字段
+ */
+function appendThinkingBlock(trace) {
+    const div = document.createElement('div');
+    div.className = 'thinking-block';
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'thinking-toggle';
+    toggle.title = '点击展开/收起思考过程';
+    const arrow = document.createElement('span');
+    arrow.className = 'thinking-arrow';
+    arrow.textContent = '▸';
+    toggle.appendChild(document.createTextNode('💭 思考过程 '));
+    toggle.appendChild(arrow);
+
+    const body = document.createElement('div');
+    body.className = 'thinking-body';
+    body.hidden = true;
+
+    (trace || []).forEach(ev => {
+        const line = document.createElement('div');
+        line.className = 'thinking-line';
+        const kind = document.createElement('span');
+        kind.className = 'thinking-kind';
+        kind.textContent = '[' + (ev.kind || 'step') + ']';
+        const txt = document.createElement('span');
+        txt.textContent = ev.text || '';
+        line.appendChild(kind);
+        line.appendChild(txt);
+        body.appendChild(line);
+    });
+
+    toggle.addEventListener('click', () => {
+        const willOpen = body.hidden;
+        body.hidden = !willOpen;
+        arrow.textContent = willOpen ? '▾' : '▸';
+        toggle.classList.toggle('open', willOpen);
+        scrollToBottom();
+    });
+
+    div.appendChild(toggle);
+    div.appendChild(body);
+    messagesContainer.appendChild(div);
+    scrollToBottom();
 }
 
 /**
