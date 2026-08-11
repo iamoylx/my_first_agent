@@ -71,7 +71,7 @@
   - 全屏检测：Win32 `GetForegroundWindow` + 与屏幕尺寸比对（轮询即可，成本低）
 - 参考案例：QClaw 私人教练定时监督、飞书 AI 活动提醒 agent、proactive-nudge（OpenClaw 生态）
 
-### A2. 生活类 skill（注册即生效）✅ 已完成 2026-08-11（reminder/todo：对话生成任务→到点触发；TaskStore 独立存储 task_data/；ClockSource 动态刷新档案）
+### A2. 生活类 skill（注册即生效）✅ 已完成 2026-08-11（reminder/todo 提醒任务 ✅ / weather 天气 ✅ / health_record 健康记录 ✅；客户端图片附件多模态预留 ✅）
 - `weather`：专门城市天气工具（重邮/江西，替代泛搜）
 - `reminder` / `todo`：存待办 → 主动触发用
 - `health_record`：手动记录睡眠/体重/步数 → 进 MemoryStore `events`（为健康 MCP 打底）

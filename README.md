@@ -4,7 +4,7 @@
 
 > **记忆机制与数据彻底分离**：`memory/` 是纯机制代码（硬板接口），`memory_data/` 是纯本地记忆数据（硬盘），二者互不混杂。
 >
-> **进化路线见 `plan.md`**：阶段0「思考过程可视化」✅ + 阶段A1「主动触发机制」✅ + 阶段A2「提醒任务（reminder/todo）」✅（对话生成任务→到点桌宠提醒；作息档案动态刷新）→ 阶段A3（本地模型）→ 阶段B（MCP / 健康数据）→ 阶段C（微信 / 常驻化）。
+> **进化路线见 `plan.md`**：阶段0「思考可视化」✅ + 阶段A1「主动触发」✅ + 阶段A2「生活 skill」✅（提醒任务/天气/健康记录）→ 阶段A3（本地模型）→ 阶段B（MCP / 健康数据）→ 阶段C（微信 / 常驻化）。客户端输入框已支持**图片附件**（多模态预留）。
 
 ---
 
@@ -145,9 +145,11 @@ npx tauri build             # 在 src-tauri/target/release 产出 agent-desktop.
 
 每个技能对外暴露 `TOOLS`（给 LLM 的 schema）与 `TOOL_MAP`（可调函数）。`skills.collect_tools(*pairs)` 聚合成统一清单，主循环分发逻辑零改动。
 
-当前注册（12 个）：`web_search` / `get_current_time` / `calculator` / `read_file` / `list_dir` / `search_files` / `search_content` / `run_command` / `write_memory` / `create_reminder` / `list_reminders` / `delete_reminder`。
+当前注册（15 个）：`web_search` / `get_current_time` / `calculator` / `read_file` / `list_dir` / `search_files` / `search_content` / `run_command` / `write_memory` / `create_reminder` / `list_reminders` / `delete_reminder` / `get_weather` / `record_health` / `health_records`。
 
 - `reminder_tools`：对话中「提醒我明天下午3点开会」→ `create_reminder` 存任务 → `ReminderSource` 到点主动提醒（任务存独立 `task_data/`，与记忆完全分离）。
+- `weather`：`get_weather` 查城市天气（Open-Meteo，免费无需 Key，支持中文城市名 + 未来3天预报）。
+- `health_record`：`record_health` / `health_records` 记录睡眠/体重/步数/心率/饮水/心情 → 记忆 events（为健康 MCP 打底）。
 
 - `web_search`：URL 写死 `https://api.tavily.com/search`，Key 仅读 `TAVILY_API_KEY`（防 SSRF / 投毒）。
 - `code_tools`：`run_command` 经 `_DENY` 正则拦截 `rm -rf` / `format` / `shutdown` / `sudo` / `curl|sh` 等高危指令；文件类工具相对路径按项目根解析。
@@ -165,7 +167,7 @@ npx tauri build             # 在 src-tauri/target/release 产出 agent-desktop.
 |------|------|------|
 | `/health` | GET | 健康检查 |
 | `/ws` | GET | WebSocket：主动触发消息推送（桌宠气泡 / 主窗口），只下发 |
-| `/chat` | POST | 非流式回复 `{reply, history_len, thinking}`（thinking=思考轨迹数组） |
+| `/chat` | POST | 非流式回复 `{reply, history_len, thinking}`；可带 `image_base64` 图片（保存到 `logs/uploads/`，正文注入路径提示，为多模态预留） |
 | `/chat/stream` | POST | SSE 流式（`{"token"}` 正文 + `{"type":"thinking"}` 轨迹事件） |
 | `/history` | GET | 当前会话历史 |
 | `/reset` | POST | 重置会话 |
@@ -221,7 +223,8 @@ Rust 侧 Tauri Commands（前端 `invoke` 名）：`start_python_server` / `stop
 |------|------|------|
 | 0 | 思考过程可视化（Thinking Trace：后端轨迹 + 前端折叠灰字 + 日志落盘） | 已完成 |
 | A1 | 主动触发机制（作息/健身/空闲关心 → 桌宠气泡+主窗口；全屏免打扰；MCP/微信接口预留） | 已完成 |
-| A2 | 提醒任务 reminder/todo（对话生成任务→到点触发；TaskStore 独立存储；ClockSource 动态刷新档案） | 已完成 |
+| A2 | 生活 skill（reminder/todo 提醒任务 + weather 天气 + health_record 健康记录） | 已完成 |
+| A2.5 | 客户端图片附件（输入框选图/粘贴→base64→后端保存 logs/uploads，多模态预留） | 已完成 |
 | 1 | STM：token 滑动窗口 `prune()` | 已完成 |
 | 2 | LTM 结构化档案卡 + 离线抽取 | 已完成 |
 | 3 | MTM 跨重启续聊 | 已完成 |

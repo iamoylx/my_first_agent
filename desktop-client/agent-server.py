@@ -14,8 +14,10 @@ Tauri 前端通过 localhost:18789 调用，实现：
 """
 
 import asyncio
+import base64
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -35,6 +37,8 @@ from skills.code_tools import TOOLS as ct_tools, TOOL_MAP as ct_map
 from skills.memory_tools import TOOLS as mt_tools, TOOL_MAP as mt_map
 from skills.reminder_tools import TOOLS as rt_tools, TOOL_MAP as rt_map
 from skills.reminder_tools.store import TaskStore
+from skills.weather import TOOLS as w_tools, TOOL_MAP as w_map
+from skills.health_record import TOOLS as hr_tools, TOOL_MAP as hr_map
 import core.agent_core as core
 import active
 
@@ -55,7 +59,9 @@ mem = MemoryStore(base_dir=os.getenv("AGENT_MEMORY_DIR") or None,
 
 tools, tool_map = collect_tools((ws_tools, ws_map), (bt_tools, bt_map),
                                 (ct_tools, ct_map), (mt_tools, mt_map),
-                                (rt_tools, rt_map))
+                                (rt_tools, rt_map),
+                                (w_tools, w_map),
+                                (hr_tools, hr_map))
 
 # 当前会话 messages（内存中，启动时从记忆恢复）
 messages = None
@@ -75,6 +81,34 @@ active_scheduler.register_carrier(ws_carrier)
 
 # ============ 思考轨迹黑匣子（运行时日志，不进记忆、不进仓库）============
 LOG_DIR = PROJECT_ROOT / "logs"
+
+
+UPLOAD_DIR = PROJECT_ROOT / "logs" / "uploads"
+
+
+def _save_upload(data_url: str) -> str:
+    """保存 base64 图片到 logs/uploads/，返回绝对路径；失败返回空字符串。
+    为多模态模型（Ollama gemma3 等）预留：图片先落盘，模型接入后可直接读取。
+    图片数据绝不写入记忆 / 消息历史（只注入文本路径提示）。
+    """
+    try:
+        s = (data_url or "").strip()
+        m = re.match(r"^data:(image/\w+);base64,(.*)$", s, re.DOTALL)
+        if m:
+            mime, b64 = m.group(1), m.group(2)
+        else:
+            mime, b64 = "image/png", s
+        raw = base64.b64decode(b64, validate=False)
+        if not raw or len(raw) > 20 * 1024 * 1024:
+            return ""
+        ext = {"image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg",
+               "image/gif": ".gif", "image/webp": ".webp"}.get(mime, ".png")
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        p = UPLOAD_DIR / f"upload-{int(time.time() * 1000)}{ext}"
+        p.write_bytes(raw)
+        return str(p)
+    except Exception:
+        return ""
 
 
 def _log_thinking(user_text: str, trace: list) -> None:
@@ -126,6 +160,16 @@ async def chat_handler(request):
     async with chat_lock:
         # 用户刚发消息：通知主动触发调度器（空闲源据此重置计时）
         active_scheduler.on_user_activity()
+
+        # 图片附件（多模态准备）：保存到 logs/uploads，正文注入路径提示（不进记忆/历史）
+        try:
+            img_b64 = str(data.get("image_base64") or "")
+            if img_b64:
+                saved = _save_upload(img_b64)
+                if saved:
+                    user_text = f"{user_text}\n[用户附了一张图片，已保存到：{saved}]"
+        except Exception:
+            pass
 
         # 收集流式 token 到缓冲区 + 思考轨迹
         tokens_buffer = []

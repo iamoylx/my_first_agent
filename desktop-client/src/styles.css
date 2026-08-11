@@ -436,6 +436,60 @@ html, body {
     50% { opacity: 0; }
 }
 
+/* ===== 图片附件预览（多模态准备）===== */
+.attachment-preview {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 320px;
+    margin: 0 0 10px 4px;
+    padding: 8px 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-sm);
+    animation: msgIn 0.2s var(--ease-out);
+}
+
+.attachment-preview[hidden] { display: none; }
+
+.attachment-preview img {
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-sm);
+    object-fit: cover;
+    border: 1px solid var(--border);
+}
+
+.attach-name {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.attach-remove {
+    width: 24px;
+    height: 24px;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    flex-shrink: 0;
+}
+
+.attach-remove:hover {
+    background: var(--error);
+    color: white;
+}
+
 /* ===== 输入区域 ===== */
 .input-area {
     padding: 16px 28px 20px;
@@ -477,6 +531,27 @@ html, body {
 
 #user-input::placeholder {
     color: var(--text-muted);
+}
+
+.attach-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    flex-shrink: 0;
+    margin-bottom: 2px;
+}
+
+.attach-btn:hover {
+    background: var(--accent-light);
+    color: var(--accent);
 }
 
 .send-btn {

@@ -31,6 +31,15 @@ const btnResetChat = document.getElementById('btn-reset-chat');
 const serverStatusDot = document.getElementById('server-status');
 const charStatus = document.getElementById('char-status');
 const loadingOverlay = document.getElementById('loading-overlay');
+const btnAttach = document.getElementById('btn-attach');
+const fileInput = document.getElementById('file-input');
+const attachmentPreview = document.getElementById('attachment-preview');
+const attachThumb = document.getElementById('attach-thumb');
+const attachName = document.getElementById('attach-name');
+const attachRemove = document.getElementById('attach-remove');
+
+// ============ 图片附件（多模态准备）============
+let pendingAttachment = null;   // { name, dataUrl, mime }
 
 // ============ 全局错误显示（避免黑屏盲调）============
 function showFatal(msg) {
@@ -124,6 +133,27 @@ function bindEvents() {
 
     btnPetMode.addEventListener('click', switchToPetMode);
     btnResetChat.addEventListener('click', resetChat);
+
+    // 图片附件：选择文件 / 移除
+    btnAttach?.addEventListener('click', () => fileInput?.click());
+    fileInput?.addEventListener('change', (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (file) readFileAsAttachment(file);
+        e.target.value = '';
+    });
+    attachRemove?.addEventListener('click', clearAttachment);
+
+    // 粘贴图片（剪贴板）
+    userInput.addEventListener('paste', (e) => {
+        const items = e.clipboardData && e.clipboardData.items;
+        if (!items) return;
+        for (const it of items) {
+            if (it.type && it.type.startsWith('image/')) {
+                const file = it.getAsFile();
+                if (file) { readFileAsAttachment(file); e.preventDefault(); return; }
+            }
+        }
+    });
 }
 
 // ============ 服务连接（Tauri IPC） ============
@@ -153,6 +183,38 @@ async function waitForServer(retries = 20) {
 
 // ============ 聊天核心（Tauri IPC） ============
 
+// ============ 图片附件工具 ============
+function readFileAsAttachment(file) {
+    if (!file || !file.type.startsWith('image/')) {
+        appendMessage('[提示] 目前只支持选择图片文件（多模态模型就绪后开放其它附件）', 'system');
+        return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+        appendMessage('[提示] 图片超过 10MB，请压缩后再试', 'system');
+        return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+        pendingAttachment = { name: file.name, dataUrl: String(reader.result), mime: file.type };
+        renderAttachment();
+    };
+    reader.onerror = () => appendMessage('[错误] 读取图片失败', 'system');
+    reader.readAsDataURL(file);
+}
+
+function renderAttachment() {
+    if (!pendingAttachment) { attachmentPreview.hidden = true; return; }
+    attachThumb.src = pendingAttachment.dataUrl;
+    attachName.textContent = pendingAttachment.name || '图片';
+    attachmentPreview.hidden = false;
+}
+
+function clearAttachment() {
+    pendingAttachment = null;
+    attachmentPreview.hidden = true;
+    attachThumb.removeAttribute('src');
+}
+
 /**
  * 发送用户消息并接收 AI 回复
  */
@@ -170,7 +232,12 @@ async function sendMessage() {
     try {
         const invoke = getInvoke();
         if (!invoke) { appendMessage('[错误] Tauri API 未注入', 'system'); return; }
-        const data = await invoke('send_chat', { message: text });
+        const invokeArgs = { message: text };
+        if (pendingAttachment && pendingAttachment.dataUrl) {
+            invokeArgs.image_base64 = pendingAttachment.dataUrl;
+        }
+        const data = await invoke('send_chat', invokeArgs);
+        clearAttachment();
 
         if (data.error) {
             appendMessage(`[错误] ${data.error}`, 'system');

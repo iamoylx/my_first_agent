@@ -131,11 +131,20 @@ pub async fn check_server_health() -> Result<serde_json::Value, String> {
 // ===================== 聊天功能 =====================
 
 #[tauri::command]
-pub async fn send_chat(message: String) -> Result<serde_json::Value, String> {
+pub async fn send_chat(
+    message: String,
+    image_base64: Option<String>,
+) -> Result<serde_json::Value, String> {
     let client = reqwest::Client::new();
+    let mut body = serde_json::json!({"message": message});
+    if let Some(b64) = image_base64 {
+        if !b64.trim().is_empty() {
+            body["image_base64"] = serde_json::Value::String(b64);
+        }
+    }
     let resp = client
         .post(server_url("/chat"))
-        .json(&serde_json::json!({"message": message}))
+        .json(&body)
         .send()
         .await
         .map_err(|e| format!("请求失败: {e}"))?;
