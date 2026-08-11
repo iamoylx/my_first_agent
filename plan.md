@@ -168,7 +168,7 @@
 
 1. [ ] 手表：华强北（好看、数据接不了） vs Amazfit/小米/荣耀（能接数据）？还是先买便宜的玩？—— **仍未买，B2 待此决策**
 2. [x] 微信：先做企微（合规稳定）—— **已定**：企微推送 Carrier 已接（WECOM_WEBHOOK_URL）；对话入口/服务号/个人微信暂缓
-3. [x] 本地模型：已下载 **gemma3:4b**（多模态+中文，~3.3GB，D 盘）—— **已定**，待 A3 接入；如工具调用不足再补 Qwen3-4B
+3. [x] 本地模型：已换 **qwen3-vl:4b**（多模态 + 中文 + **原生工具调用**，~3.3GB，D 盘，Ollama 已导入）—— **已定**；gemma3 因无专用工具 token 已卸载。客户端 DeepSeek/本地 一键切换 ✅
 4. [x] 主动触发内容范围：已做 **作息睡眠/健身/睡前牛奶/天气带伞/空闲关心**（Clock/Reminder/Idle 源）—— 待办/健康待 A2 增强或 B2
 
 > 执行顺序建议：**阶段0✅ → A1✅ → A2✅ → B1(MCP+Obsidian+企微)✅ → 记忆v3✅ → 瘦身✅ → A3(本地模型)✅已完成 → B2(健康数据，随手表)⏳ → C(微信/常驻化)⏳**
@@ -190,7 +190,7 @@
 | 企业微信推送 | ✅ 完成 | `active/carriers.py` WeComCarrier（`WECOM_WEBHOOK_URL`） |
 | 桌面客户端 | ✅ 可用 | Tauri 双窗口 + 桌宠 6 状态 + 记忆 UI + 附件；根目录 exe 发布 |
 | 项目结构 | ✅ 瘦身完成 | 扁平目录；备份/旧测试归档 `D:\document\AGENT_archives\`；回归 `scripts/selfcheck/` |
-| 本地模型（A3） | ⏳ 未接入 | Ollama 已装（v0.32.9）+ gemma3:4b 已下载（D 盘），LangChain 未切 base_url |
+| 本地模型（A3） | ✅ 完成 | Ollama（v0.32.9）+ **qwen3-vl:4b**（D 盘，~3.3GB）；客户端 DeepSeek/本地 一键切换；本地模式断网可用（原生工具+看图）；`OLLAMA_KEEP_ALIVE=10m` 闲置自动卸载 |
 | 健康数据（B2） | ⏳ 待决策 | 等手表（华为/Amazfit/小米）；`health_record` skill 已打底 |
 | 微信对话入口（C1） | ⏳ 未做 | 企微推送已有；企微"聊天入口"/服务号/个人微信未做 |
 | 后台常驻（C2）/多端（C3） | ⏳ 未做 | 常驻服务化 + 手机/Web 界面 |
@@ -199,7 +199,7 @@
 
 ## 九、未完成事项（按优先级）
 
-1. **A3 本地模型接入**（最高优先，模型已备）：LangChain 加 Ollama 客户端（`base_url=http://127.0.0.1:11434/v1`）+ 双模型策略（日常闲聊/看图走 gemma3，复杂/工具走 DeepSeek）+ 图片附件真正"看图"
+1. ~~A3 本地模型接入~~ ✅ 已完成：LangChain → Ollama qwen3-vl:4b（原生工具调用 + 看图）；客户端 DeepSeek/本地 切换按钮（frontend + Rust provider 透传 + `_route_llm` 路由）；模型导入脚本 `D:\ollama\download_qwen3vl.py` + `Modelfile-qwen3vl`
 2. **B2 健康数据**：等手表决策 → huawei-health-mcp / Zepp / 小米（`HealthSource` 填进现成 TriggerSource 接口）
 3. **C1 微信对话入口**：企微应用消息（可双向聊天）/ 服务号 / 个人微信（高风险）
 4. **C2 后台常驻服务化**：小满变成常驻服务（开机自启 + 通知），桌面为前台 UI

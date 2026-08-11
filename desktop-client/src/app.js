@@ -65,6 +65,23 @@ function getInvoke() {
 
 // ============ 状态 ============
 let isReplying = false;
+// 对话大脑切换：localStorage 持久化，默认 DeepSeek
+let currentProvider = localStorage.getItem('xiaoman_provider') || 'deepseek';
+
+// ============ 模型切换（DeepSeek / 本地）============
+function setProvider(p) {
+    if (p !== 'deepseek' && p !== 'local') return;
+    currentProvider = p;
+    localStorage.setItem('xiaoman_provider', p);
+    document.querySelectorAll('#provider-toggle .provider-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.provider === p);
+    });
+    const label = p === 'local' ? '本地 Qwen3-VL' : 'DeepSeek';
+    const st = document.getElementById('header-status');
+    if (st) st.textContent = label;
+    appendMessage(`模型已切换：${label}${p === 'local' ? '（断网可用，看图走本地）' : '（联网，图片由本地视觉识别）'}`, 'system');
+    scrollToBottom();
+}
 
 // ============ 初始化 ============
 document.addEventListener('DOMContentLoaded', async () => {
@@ -118,6 +135,21 @@ function scheduleActiveWSRetry() {
 // ============ 事件绑定 ============
 function bindEvents() {
     sendBtn.addEventListener('click', () => sendMessage());
+
+    const toggle = document.getElementById('provider-toggle');
+    if (toggle) {
+        toggle.querySelectorAll('.provider-btn').forEach(btn => {
+            btn.addEventListener('click', () => setProvider(btn.dataset.provider));
+        });
+        // 初始化选中态
+        toggle.querySelectorAll('.provider-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.provider === currentProvider);
+        });
+        // header 状态直接显示当前模型
+        const initLabel = currentProvider === 'local' ? '本地 Qwen3-VL' : 'DeepSeek';
+        const hst = document.getElementById('header-status');
+        if (hst) hst.textContent = initLabel;
+    }
 
     userInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -232,7 +264,7 @@ async function sendMessage() {
     try {
         const invoke = getInvoke();
         if (!invoke) { appendMessage('[错误] Tauri API 未注入', 'system'); return; }
-        const invokeArgs = { message: text };
+        const invokeArgs = { message: text, provider: currentProvider };
         if (pendingAttachment && pendingAttachment.dataUrl) {
             invokeArgs.image_base64 = pendingAttachment.dataUrl;
         }

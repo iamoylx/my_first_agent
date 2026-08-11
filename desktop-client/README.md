@@ -56,6 +56,7 @@ npm run tauri build
 | **聊天气泡** | AI 回复时头顶弹出气泡，8 秒自动消失 |
 | **拖拽定位** | 拖动桌宠到桌面任意位置；单击唤出主窗口；双击同上 |
 | **无终端** | GUI 应用子系统，不弹 cmd 黑框；Python 子进程也隐藏 |
+| **模型切换** | 聊天头部 DeepSeek / 本地 一键切换（localStorage 记忆）：本地模式走 Ollama qwen3-vl:4b（断网可用、原生工具+看图）；DeepSeek 模式文本走 DeepSeek、发图临时走本地视觉 |
 | **WebView2 自适应** | 自动搜索系统 EdgeWebView 运行时，无需手动安装 |
 
 ## 项目结构
@@ -68,7 +69,7 @@ AGENT/                          # 项目根目录
 │   │   ├── tauri.conf.json     # 双窗口配置（main + pet）
 │   │   └── src/
 │   │       ├── main.rs         # [已改] WebView2 自动检测 + 窗口管理
-│   │       ├── commands.rs     # [已改] IPC 命令 + CREATE_NO_WINDOW + exit_app
+│   │       ├── commands.rs     # [已改] IPC 命令 + CREATE_NO_WINDOW + exit_app + provider 透传
 │   │       └── pet_manager.rs  # 6 种状态枚举定义
 │   ├── src/                    # 前端静态文件（Tauri 编译期嵌入 exe）
 │   │   ├── index.html         # [已改] 正视图裁切容器

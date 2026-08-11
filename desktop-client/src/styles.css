@@ -229,6 +229,34 @@ html, body {
     gap: 8px;
 }
 
+/* 模型切换按钮（DeepSeek / 本地） */
+.provider-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.7);
+    box-shadow: var(--shadow-sm);
+}
+.provider-btn {
+    padding: 4px 10px;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+.provider-btn:hover { color: var(--text-primary); }
+.provider-btn.active {
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+}
+
 .header-btn {
     display: inline-flex;
     align-items: center;

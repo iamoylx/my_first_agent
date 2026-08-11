@@ -55,18 +55,28 @@ if not API_KEY:
     )
 
 # ============ A3 双模型配置 ============
-# 文本对话默认走 DeepSeek（工具/记忆可靠）；图片消息自动走本地视觉模型（gemma3）。
+# 前端「切换按钮」选择对话大脑：
+#   local    → 全部走本地 Qwen3-VL-4B（离线可用，原生工具调用 + 看图）
+#   deepseek → 文本走 DeepSeek；仅当带图片时该轮走本地视觉（DeepSeek 无视觉能力）
+#   ""(自动) → 兼容旧逻辑：图片→本地视觉；纯文本→DeepSeek（或 AGENT_LOCAL_TEXT=1 时走本地）
 AGENT_LLM_BASE = os.getenv("AGENT_LLM_BASE", "https://api.deepseek.com/v1")
 AGENT_LLM_MODEL = os.getenv("AGENT_LLM_MODEL", "deepseek-chat")
 AGENT_LOCAL_BASE = os.getenv("AGENT_LOCAL_BASE", "http://127.0.0.1:11434/v1")
-AGENT_LOCAL_MODEL = os.getenv("AGENT_LOCAL_MODEL", "gemma3:4b")
+AGENT_LOCAL_MODEL = os.getenv("AGENT_LOCAL_MODEL", "qwen3-vl:4b")
 # AGENT_LOCAL_TEXT=1：纯文本也走本地模型（工具调用会变弱，谨慎开启）
 AGENT_LOCAL_TEXT = os.getenv("AGENT_LOCAL_TEXT") == "1"
 
 
-def _route_llm(images: bool) -> tuple:
-    """路由：有图片 → 本地视觉；纯文本 → 默认 DeepSeek（或 AGENT_LOCAL_TEXT 走本地）。"""
-    if images or AGENT_LOCAL_TEXT:
+def _route_llm(images: bool, provider: str = "") -> tuple:
+    """路由：根据前端 provider 选择本轮对话大脑。返回 (base_url, model)。"""
+    if provider == "local":
+        return AGENT_LOCAL_BASE, AGENT_LOCAL_MODEL
+    if images:
+        # 任何模式带图都必须走本地视觉（DeepSeek 无视觉）
+        return AGENT_LOCAL_BASE, AGENT_LOCAL_MODEL
+    if provider == "deepseek":
+        return AGENT_LLM_BASE, AGENT_LLM_MODEL
+    if AGENT_LOCAL_TEXT:
         return AGENT_LOCAL_BASE, AGENT_LOCAL_MODEL
     return AGENT_LLM_BASE, AGENT_LLM_MODEL
 
@@ -195,6 +205,8 @@ async def chat_handler(request):
     if not user_text:
         return web.json_response({"error": "empty message"}, status=400)
 
+    provider = str(data.get("provider") or "")  # "deepseek" | "local" | ""
+
     async with chat_lock:
         # 用户刚发消息：通知主动触发调度器（空闲源据此重置计时）
         active_scheduler.on_user_activity()
@@ -209,7 +221,7 @@ async def chat_handler(request):
                     images = [img_b64 if img_b64.startswith("data:") else "data:image/png;base64," + img_b64]
         except Exception:
             pass
-        llm_base, llm_model = _route_llm(bool(images))
+        llm_base, llm_model = _route_llm(bool(images), provider)
 
         # 收集流式 token 到缓冲区 + 思考轨迹
         tokens_buffer = []
@@ -242,6 +254,7 @@ async def chat_handler(request):
                 "reply": reply,
                 "history_len": len(messages),
                 "thinking": thinking_trace,
+                "model": llm_model,
             })
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -263,6 +276,8 @@ async def chat_stream_handler(request):
 
     if not user_text:
         return web.Response(status=400, text="empty message")
+
+    provider = str(data.get("provider") or "")  # "deepseek" | "local" | ""
 
     response = web.StreamResponse(
         status=200,
@@ -299,7 +314,7 @@ async def chat_stream_handler(request):
                         images = [img_b64 if img_b64.startswith("data:") else "data:image/png;base64," + img_b64]
             except Exception:
                 pass
-            llm_base, llm_model = _route_llm(bool(images))
+            llm_base, llm_model = _route_llm(bool(images), provider)
 
             messages = await core.process_turn(
                 messages=messages,
@@ -613,3 +628,4 @@ if __name__ == "__main__":
         if runner is not None:
             loop.run_until_complete(runner.cleanup())
         loop.close()
+
