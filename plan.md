@@ -84,7 +84,7 @@
 
 ## 二、阶段 B —— 近期可实现（取决于手表决策）
 
-### B1. 通用 MCP Client 框架
+### B1. 通用 MCP Client 框架 ✅ 已完成 2026-08-12（mcp_bridge 配置式 client + 工具动态注册 + /mcp/tools；Obsidian 笔记已接入并实测模型多步调用；企业微信推送 Carrier 已接（WECOM_WEBHOOK_URL）；browser_use/music/calendar 配置模板就绪，待凭证/启用）
 - 用 `mcp` Python SDK 做配置式 MCP 客户端，小满作为 MCP 客户端调用外部数据源
 - 数据进 MemoryStore（events），小满据此主动关心
 
@@ -168,4 +168,4 @@
 3. [ ] 本地模型：先装 Qwen3-8B（工具调用稍强）还是 Qwen2.5-7B（更稳更快）？
 4. [ ] 主动触发的提醒内容范围：作息/待办/健康/天气，先做哪几类？
 
-> 执行顺序建议：**阶段0(思考可视化)✅ → A1(主动触发+全屏检测)✅ → A2(提醒任务 reminder/todo)✅已完成 → A3(本地模型) → B1(MCP框架) → B2(健康数据，随手表) → C(微信/常驻化，随决策)**
+> 执行顺序建议：**阶段0✅ → A1✅ → A2✅ → B1(MCP框架+Obsidian+企微)✅已完成 → A3(本地模型) → B2(健康数据，随手表) → C(微信/常驻化，随决策)**

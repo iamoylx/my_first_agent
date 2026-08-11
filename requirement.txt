@@ -34,3 +34,9 @@ langchain-openai>=1.3   # ChatOpenAI（DeepSeek 走 OpenAI 兼容端点）
 #   - 系统 WebView2 运行时（本机依赖 Windows 自带 EdgeWebView，详见 README / handoff.md）
 # Rust 依赖见 desktop-client/src-tauri/Cargo.toml：
 #   tauri / serde / serde_json / tokio / reqwest
+
+# ---- MCP 桥（mcp_bridge/，B1 通用 MCP 客户端框架）----
+mcp>=1.26          # Model Context Protocol SDK（client 端）
+
+# ---- 可选：browser-use（浏览器控制 MCP server，启用前需 playwright install chromium）----
+# browser-use>=0.13

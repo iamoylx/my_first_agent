@@ -4,7 +4,7 @@
 
 > **记忆机制与数据彻底分离**：`memory/` 是纯机制代码（硬板接口），`memory_data/` 是纯本地记忆数据（硬盘），二者互不混杂。
 >
-> **进化路线见 `plan.md`**：阶段0「思考可视化」✅ + 阶段A1「主动触发」✅ + 阶段A2「生活 skill」✅（提醒任务/天气/健康记录）→ 阶段A3（本地模型）→ 阶段B（MCP / 健康数据）→ 阶段C（微信 / 常驻化）。客户端输入框已支持**图片附件**（多模态预留）。
+> **进化路线见 `plan.md`**：阶段0「思考可视化」✅ + 阶段A1「主动触发」✅ + 阶段A2「生活 skill」✅ + **阶段B1「MCP 框架」✅**（Obsidian 笔记已接入，企业微信推送已接，音乐/日历/browser-use 模板就绪）→ 阶段A3（本地模型）→ 阶段B2（健康数据）→ 阶段C（微信/常驻化）。客户端支持**图片附件**（多模态预留）。
 
 ---
 
@@ -62,7 +62,9 @@ skills/                       # 技能（自包含，注册即生效，主循环
 ├─ code_tools/                #   读文件/列目录/搜文件/搜内容/跑命令（含危险指令拦截）
 └─ web_search/                #   联网搜索（Tavily，URL 写死防 SSRF）
 tests/                        # 单元测试（不进仓库；用 temp 目录隔离，不污染真实记忆）
-logs/                         # ★运行黑匣子（thinking-YYYYMMDD.jsonl / active-YYYYMMDD.jsonl，运行时产物，不进仓库）
+logs/                         # ★运行黑匣子（thinking/active/uploads，运行时产物，不进仓库）
+mcp_bridge/                   # ★通用 MCP 客户端框架（B1）：配置式连接/工具注册/数据源接口
+mcp/                          # MCP 配置（config.json：obsidian 已启用，browser_use/music/calendar 模板）
 task_data/                    # 提醒任务数据（本地运行时数据，与记忆分离，不进仓库）
 active/                       # ★主动触发模块（阶段A1）：接口隔离，MCP/微信即插即用
 ├─ scheduler.py               #   ActiveScheduler：周期 tick + 冷却去重 + 广播
@@ -167,6 +169,7 @@ npx tauri build             # 在 src-tauri/target/release 产出 agent-desktop.
 |------|------|------|
 | `/health` | GET | 健康检查 |
 | `/ws` | GET | WebSocket：主动触发消息推送（桌宠气泡 / 主窗口），只下发 |
+| `/mcp/tools` | GET | 查看已注册的 MCP 工具（B1 调试/管理） |
 | `/chat` | POST | 非流式回复 `{reply, history_len, thinking}`；可带 `image_base64` 图片（保存到 `logs/uploads/`，正文注入路径提示，为多模态预留） |
 | `/chat/stream` | POST | SSE 流式（`{"token"}` 正文 + `{"type":"thinking"}` 轨迹事件） |
 | `/history` | GET | 当前会话历史 |
@@ -196,7 +199,7 @@ Rust 侧 Tauri Commands（前端 `invoke` 名）：`start_python_server` / `stop
 完整清单见 `requirement.txt`。要点：
 
 - **必填**：`DEEPSEEK_API_KEY`（缺失启动即报错）。
-- **可选**：`TAVILY_API_KEY`（联网搜索）、`AGENT_USER_ID`（记忆隔离，默认 `default`）、`AGENT_PORT`（桌面后端端口，默认 `18789`）。
+- **可选**：`TAVILY_API_KEY`（联网搜索）、`AGENT_USER_ID`（记忆隔离，默认 `default`）、`AGENT_PORT`（桌面后端端口，默认 `18789`）、`WECOM_WEBHOOK_URL`（企业微信群机器人 webhook，配置后主动消息同步推送企微）。
 - **pip 依赖**：`aiohttp`（必需）；`tiktoken`（可选，更准的 token 估算）。
 
 ---
@@ -225,6 +228,7 @@ Rust 侧 Tauri Commands（前端 `invoke` 名）：`start_python_server` / `stop
 | A1 | 主动触发机制（作息/健身/空闲关心 → 桌宠气泡+主窗口；全屏免打扰；MCP/微信接口预留） | 已完成 |
 | A2 | 生活 skill（reminder/todo 提醒任务 + weather 天气 + health_record 健康记录） | 已完成 |
 | A2.5 | 客户端图片附件（输入框选图/粘贴→base64→后端保存 logs/uploads，多模态预留） | 已完成 |
+| B1 | 通用 MCP 框架（mcp_bridge 配置式 client + 工具动态注册 + /mcp/tools）+ Obsidian 笔记接入 + 企业微信推送 Carrier | 已完成 |
 | 1 | STM：token 滑动窗口 `prune()` | 已完成 |
 | 2 | LTM 结构化档案卡 + 离线抽取 | 已完成 |
 | 3 | MTM 跨重启续聊 | 已完成 |

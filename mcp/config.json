@@ -1,0 +1,50 @@
+{
+  "servers": {
+    "obsidian": {
+      "enabled": true,
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "D:\\document\\vault"
+      ],
+      "note": "Obsidian 本地笔记库（markdown 文件夹，无需 Obsidian 应用；filesystem MCP server）"
+    },
+    "browser_use": {
+      "enabled": false,
+      "transport": "stdio",
+      "command": "python",
+      "args": [
+        "-m",
+        "browser_use.mcp"
+      ],
+      "env": {
+        "OPENAI_API_KEY": "",
+        "OPENAI_BASE_URL": "https://api.deepseek.com/v1",
+        "CHROME_INSTANCE_PATH": ""
+      },
+      "note": "浏览器控制。已安装 browser-use；启用前需：1) playwright install chromium 下载浏览器 2) 配 OPENAI_API_KEY（可填 DEEPSEEK_API_KEY + base_url 指 DeepSeek，或 Ollama gemma3）"
+    },
+    "music": {
+      "enabled": false,
+      "transport": "stdio",
+      "command": "python",
+      "args": [
+        "-m",
+        "mcp_music_server"
+      ],
+      "note": "音乐搜索播放（网易云/QQ/酷狗；需安装 mcp-music-server 并扫码登录）"
+    },
+    "calendar": {
+      "enabled": false,
+      "transport": "stdio",
+      "command": "python",
+      "args": [
+        "-m",
+        "feishu_calendar_mcp"
+      ],
+      "note": "日历（飞书；需 OAuth 凭证，占位）"
+    }
+  }
+}

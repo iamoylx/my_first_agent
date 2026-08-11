@@ -100,3 +100,28 @@ class ToastCarrier(Carrier):
             n.show()
         except Exception:
             pass
+
+
+class WeComCarrier(Carrier):
+    """企业微信推送（群机器人 webhook）。
+
+    配置：环境变量 WECOM_WEBHOOK_URL（企微群里添加机器人得到的 webhook 地址）。
+    合规、免费、无需企业认证；主动触发消息会同时推送到企微群，手机也能收到。
+    """
+    name = "wecom"
+
+    def __init__(self, webhook_url=None):
+        self.webhook_url = (webhook_url or "").strip()
+        self.available = bool(self.webhook_url)
+
+    async def send(self, msg: dict):
+        if not self.available:
+            return
+        try:
+            import aiohttp
+            payload = {"msgtype": "text", "text": {"content": str(msg.get("text", ""))}}
+            async with aiohttp.ClientSession() as s:
+                async with s.post(self.webhook_url, json=payload, timeout=8):
+                    pass
+        except Exception:
+            pass

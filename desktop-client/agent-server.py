@@ -41,6 +41,7 @@ from skills.weather import TOOLS as w_tools, TOOL_MAP as w_map
 from skills.health_record import TOOLS as hr_tools, TOOL_MAP as hr_map
 import core.agent_core as core
 import active
+from mcp_bridge import MCPManager
 
 # ============ 全局状态 ============
 # API Key 读自「用户级永久环境变量」（本机已配置 DEEPSEEK_API_KEY / TAVILY_API_KEY）。
@@ -57,11 +58,27 @@ PORT = int(os.getenv("AGENT_PORT", "18789"))
 mem = MemoryStore(base_dir=os.getenv("AGENT_MEMORY_DIR") or None,
                   user_id=os.getenv("AGENT_USER_ID", "default"))
 
-tools, tool_map = collect_tools((ws_tools, ws_map), (bt_tools, bt_map),
+base_tools, base_tool_map = collect_tools((ws_tools, ws_map), (bt_tools, bt_map),
                                 (ct_tools, ct_map), (mt_tools, mt_map),
                                 (rt_tools, rt_map),
                                 (w_tools, w_map),
                                 (hr_tools, hr_map))
+tools, tool_map = base_tools, dict(base_tool_map)
+
+# 通用 MCP 桥（B1）：启动时连接 MCP server，动态合并工具
+mcp_manager = MCPManager(config_dir=PROJECT_ROOT / "mcp")
+
+
+async def _sync_mcp_tools():
+    """连接 MCP servers 并把工具合并进 tools/tool_map。"""
+    global tools, tool_map
+    await mcp_manager.start()
+    mcp_tools = mcp_manager.openai_tools()
+    mcp_map = mcp_manager.tool_map()
+    if mcp_tools:
+        tools = base_tools + mcp_tools
+        tool_map = {**base_tool_map, **mcp_map}
+        print(f"[MCP] 已合并 {len(mcp_tools)} 个 MCP 工具（当前共 {len(tools)} 个）")
 
 # 当前会话 messages（内存中，启动时从记忆恢复）
 messages = None
@@ -78,6 +95,10 @@ active_scheduler = active.ActiveScheduler(mem, log_dir=PROJECT_ROOT / "logs",
                                           task_user_id=os.getenv("AGENT_USER_ID", "default"))
 ws_carrier = active.WebSocketCarrier()
 active_scheduler.register_carrier(ws_carrier)
+wecom_url = os.getenv("WECOM_WEBHOOK_URL") or ""
+if wecom_url:
+    active_scheduler.register_carrier(active.WeComCarrier(wecom_url))
+    print("[Agent Server] 企业微信推送已启用（WECOM_WEBHOOK_URL）")
 
 # ============ 思考轨迹黑匣子（运行时日志，不进记忆、不进仓库）============
 LOG_DIR = PROJECT_ROOT / "logs"
@@ -390,6 +411,21 @@ async def assets_proxy(request):
 
 
 
+async def mcp_tools_handler(request):
+    """GET /mcp/tools — 查看已注册的 MCP 工具（调试/管理用）。"""
+    try:
+        tools = mcp_manager.openai_tools()
+        return web.json_response({
+            "count": len(tools),
+            "available": mcp_manager.available_tools(),
+            "tools": [{"name": t["function"]["name"],
+                       "description": (t["function"].get("description") or "")[:120]}
+                      for t in tools],
+        })
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
 async def ws_handler(request):
     """GET /ws — WebSocket：桌宠/主窗口连接后接收主动触发消息。
     只下发（服务端→前端），前端无需发送内容。
@@ -420,9 +456,13 @@ async def finalize_handler(request):
             result = {"status": "finalized", "changed": changed}
         except Exception as e:
             result = {"status": "error", "error": str(e)}
-    # 停止主动触发调度器
+    # 停止主动触发调度器 + 关闭 MCP 连接
     try:
         await active_scheduler.stop()
+    except Exception:
+        pass
+    try:
+        await mcp_manager.stop()
     except Exception:
         pass
     loop = asyncio.get_running_loop()
@@ -460,6 +500,8 @@ def create_app():
     app.router.add_post("/profile/add", profile_add_handler)
     # 主动触发 WebSocket（阶段A1）
     app.router.add_get("/ws", ws_handler)
+    # MCP 工具状态（B1）
+    app.router.add_get("/mcp/tools", mcp_tools_handler)
 
     # 素材静态代理
     app.router.add_get("/assets/{path:.*}", assets_proxy)
@@ -493,6 +535,9 @@ if __name__ == "__main__":
         await runner.setup()
         site = web.TCPSite(runner, "127.0.0.1", PORT)
         await site.start()
+        # 连接 MCP servers（失败单点隔离，不影响主服务）
+        await _sync_mcp_tools()
+
         # 启动主动触发调度器（周期 tick）
         await active_scheduler.start()
         print(f"[Agent Server] 服务已启动: http://127.0.0.1:{PORT}  (主动触发: 开)")
