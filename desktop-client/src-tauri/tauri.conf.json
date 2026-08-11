@@ -27,8 +27,8 @@
       {
         "label": "pet",
         "title": "小满",
-        "width": 260,
-        "height": 300,
+        "width": 230,
+        "height": 280,
         "x": 100,
         "y": 100,
         "decorations": false,
@@ -37,7 +37,8 @@
         "skipTaskbar": true,
         "resizable": false,
         "visible": false,
-        "url": "pet.html"
+        "url": "pet.html",
+        "shadow": false
       }
     ],
     "security": {

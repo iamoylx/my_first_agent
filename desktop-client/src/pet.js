@@ -261,6 +261,8 @@ function initDrag() {
     let isDragging = false;
     let startX, startY, initialX, initialY;
     let dragStartTime = 0;
+    let lastMouseX = 0;    // 上一次 mousemove 的鼠标 X（方向判定用）
+    let swipeAccum = 0;    // 方向累计：纯跟随鼠标移动方向，不受图标跟手延迟影响
 
     petContainer.addEventListener('mousedown', (e) => {
         // 控制按钮区域不触发拖拽
@@ -272,6 +274,8 @@ function initDrag() {
         dragStartTime = Date.now();
         startX = e.screenX;
         startY = e.screenY;
+        lastMouseX = e.screenX;
+        swipeAccum = 0;
 
         getCurrentPosition().then(pos => {
             initialX = pos.x;
@@ -299,12 +303,20 @@ function initDrag() {
         }
 
         // 长按 + 左右移动 → 对应手势状态图（无条件覆盖，包括回复完成）
-        const st = Math.abs(dx) > 24
-            ? (dx < 0 ? STATES.SWIPE_LEFT : STATES.SWIPE_RIGHT)
-            : STATES.PRESS;
-        if (st !== dragState) {
-            dragState = st;
-            forceState(st);
+        // 方向判定：纯看鼠标移动方向（实时累计），反向移动会自动切回并重新累计
+        const stepX = e.screenX - lastMouseX;
+        lastMouseX = e.screenX;
+        if (swipeAccum !== 0 && stepX !== 0 && Math.sign(stepX) !== Math.sign(swipeAccum)
+            && Math.abs(swipeAccum) >= 14) {
+            swipeAccum = 0;   // 反向：重置累计，让状态跟随最新方向
+        }
+        swipeAccum += stepX;
+        if (Math.abs(swipeAccum) >= 14) {
+            const st = swipeAccum < 0 ? STATES.SWIPE_LEFT : STATES.SWIPE_RIGHT;
+            if (st !== dragState) {
+                dragState = st;
+                forceState(st);
+            }
         }
     });
 
@@ -312,6 +324,7 @@ function initDrag() {
         if (!isDragging) return;
         isDragging = false;
         dragState = null;
+        swipeAccum = 0;
 
         const elapsed = Date.now() - dragStartTime;
         const dist = Math.hypot(e.screenX - startX, e.screenY - startY);
