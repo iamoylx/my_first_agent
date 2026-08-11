@@ -39,57 +39,41 @@
 
 ---
 
-## 二、目录结构
+## 二、目录结构（扁平 · 一模块一目了然）
 
 ```
-AGENT.py                      # 终端主程序：Function Calling 主循环 + try/except 容错
-commands.py                   # 终端命令：/recall /load /sessions /profile /summary /forget /cleanup /help
-core/
-└─ agent_core.py              # headless 内核（LangChain 版）：调模型 + 工具循环 + 流式 + DSML 防御 + build/finalize
-memory/                       # ★纯机制代码（硬板接口，进仓库，不含任何数据文件）
-├─ __init__.py                #   包说明
-├─ store.py                   #   统一记忆层 MemoryStore（路径由 base_dir 驱动，默认 memory_data/）
-├─ token_window.py            #   STM：token 滑动窗口 prune()
-├─ sessions.py                #   MTM 纯函数：sanitize 清洗 + summarize_session 摘要
-└─ profile.py                 #   LTM 纯函数：merge_facts 合并 + to_context_text 渲染 + extract 抽取
-memory_data/                  # ★纯本地记忆数据（硬盘，不进仓库，可整体复制提取）
-├─ profile.json               #   旧扁平档案（向后兼容只读回退，不写入）
-├─ sessions/                  #   旧扁平会话（向后兼容只读回退，不写入）
-└─ users/<user_id>/
-   ├─ profile.json            #   LTM 档案卡（长期事实，latest-wins）
-   └─ sessions/{current,<时间戳>}.json   # MTM 会话 + <id>.summary.json 摘要
-skills/                       # 技能（自包含，注册即生效，主循环零改动）
-├─ __init__.py                #   collect_tools() 聚合器
-├─ basic_tools/               #   时间 get_current_time + 计算器 calculator
-├─ code_tools/                #   读文件/列目录/搜文件/搜内容/跑命令（含危险指令拦截）
-└─ web_search/                #   联网搜索（Tavily，URL 写死防 SSRF）
-tests/                        # 单元测试（不进仓库；用 temp 目录隔离，不污染真实记忆）
-logs/                         # ★运行黑匣子（thinking/active/uploads，运行时产物，不进仓库）
-mcp_bridge/                   # ★通用 MCP 客户端框架（B1）：配置式连接/工具注册/数据源接口
-mcp/                          # MCP 配置（config.json：obsidian 已启用，browser_use/music/calendar 模板）
-task_data/                    # 提醒任务数据（本地运行时数据，与记忆分离，不进仓库）
-active/                       # ★主动触发模块（阶段A1）：接口隔离，MCP/微信即插即用
-├─ scheduler.py               #   ActiveScheduler：周期 tick + 冷却去重 + 广播
-├─ sources.py                 #   事件源：ClockSource(作息/健身/牛奶) + IdleSource(空闲关心)
-├─ policy.py                  #   免打扰：前台全屏程序检测（ctypes，零依赖）
-├─ carriers.py                #   载体：Log(黑匣子) / WebSocket(桌宠+主窗口) / Toast(可选)
-└─ config.py                  #   配置：tick/冷却/规则（可 active/config.json 覆盖）
-素材/                          # 桌宠阶段遗留立绘（终端版不加载，保留备用，不进仓库）
-desktop-client/               # Tauri v2 桌面客户端（双窗口：主窗口 + 桌宠）
-├─ agent-server.py            #   aiohttp 本地后端（:18789），桥接 core
-├─ package.json               #   Tauri CLI 依赖（@tauri-apps/cli ^2.11.4）
-├─ src/                       #   前端：index.html/app.js（主窗口）+ pet.html/pet.js（桌宠）
-└─ src-tauri/                 #   Rust 后端
-   ├─ Cargo.toml              #   依赖：tauri / serde / serde_json / tokio / reqwest
-   ├─ tauri.conf.json         #   窗口/构建配置（frontendDist=../src，withGlobalTauri=true）
-   └─ src/
-      ├─ main.rs              #   入口：WebView2 定位 + 启动 Python sidecar + 窗口事件
-      ├─ commands.rs          #   Tauri Commands（send_chat / health / switch_to_pet ...）
-      └─ pet_manager.rs       #   桌宠状态枚举（PetState，CSS class 映射）
+AGENT.py                      # 终端版主程序（on_token = print）
+commands.py                   # 终端版命令（/recall /sessions /profile ...）
+core/                         # agent 核心（LangChain 版，无 UI）
+└─ agent_core.py              #   process_turn / stream_final / DSML 防御 / build / finalize
+memory/                       # 记忆机制（纯代码，不含数据）
+├─ store.py                   #   统一记忆层 MemoryStore（schema v3：5 板块档案卡）
+├─ profile.py                 #   板块分类/命名规范/抽取/合并/渲染
+├─ sessions.py / token_window.py
+active/                       # 主动触发模块（A1）
+├─ scheduler.py               #   周期 tick + 冷却去重 + 载体广播
+├─ sources.py                 #   Clock/Idle/Reminder 事件源（作息/健身/牛奶/天气/空闲/任务）
+├─ policy.py                  #   全屏免打扰
+├─ carriers.py                #   桌宠WS/日志/企微推送
+└─ config.py
+skills/                       # 技能（注册即生效）：basic/code/web_search/memory_tools/reminder_tools/weather/health_record
+mcp_bridge/                   # MCP 客户端框架（B1）：配置式连接外部 MCP server
+mcp/                          # MCP 配置（config.json）
+scripts/                      # 工具脚本 + 自检回归
+├─ migrate_profile_v3.py      #   记忆 v2→v3 迁移
+├─ migrate_memory_v2.py
+└─ selfcheck/                 #   回归测试（python scripts/selfcheck/test_*.py）
+desktop-client/               # Tauri v2 桌面客户端（主窗口 + 桌宠）
+├─ agent-server.py            #   本地 HTTP/WS 后端（:18789），桥接 core/active/mcp
+├─ src/                       #   前端（index.html/app.js/pet.html/pet.js/styles.css）
+└─ src-tauri/                 #   Rust（main.rs/commands.rs/pet_manager.rs）
+memory_data/                  # ★本地记忆数据（运行时，不进 git）
+task_data/                    # 提醒任务数据（运行时，不进 git）
+logs/                         # 运行时日志（thinking/active/uploads）
+素材/                         # 桌宠素材（不进 git）
+README.md / plan.md / requirement.txt
+agent-desktop.exe / WebView2Loader.dll / agent-idle.ico   # 根目录发布产物
 ```
-
----
-
 ## 三、运行
 
 ### 终端版
