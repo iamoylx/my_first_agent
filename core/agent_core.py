@@ -1,34 +1,60 @@
-"""Headless Agent 核心（不依赖 stdin / 终端）。
+"""Headless Agent 核心（不依赖 stdin / 终端）· LangChain 版。
 
 把原 AGENT.py 中与 IO 耦合的"单轮对话处理 + 流式输出 + 记忆落盘"抽离到这里，
 供两套前端复用：
   - 终端前端  ：AGENT.py（on_token = print）
-  - 桌宠前端  ：pet/main.py（on_token = 聊天窗追加文字）
+  - 桌宠前端  ：desktop-client（on_token = 前端追加文字）
 
-设计原则（解耦）：
-  - core 不 import 任何具体技能，保持与具体人格解耦。
-  - core 只收用户输入(user_text)、只通过回调(on_token)发事件，不主动渲染 UI。
-  - 记忆 MemoryStore、技能 tool_map、环境变量沿用现有逻辑，行为保持一致。
+模型/工具调用层基于 LangChain：
+  - langchain_openai.ChatOpenAI（DeepSeek 走 OpenAI 兼容端点）
+  - llm.bind_tools(tools) 做函数调用检测
+  - llm.astream 流式输出最终回答
+  - langchain_core.messages 统一消息模型
+
+保留本项目特有的工程逻辑：
+  - DSML 工具调用防御（DeepSeek 会把工具调用写成文本塞进 content）
+  - 工具执行仍走 tool_map + _call_tool（mem 注入 + 灵活参数）
+  - MAX_TOOL_ROUNDS 工具循环上限 / 增量抽取缓冲 / prune / autosave / finalize
 """
 import asyncio
-import aiohttp
+import inspect
 import json
 import re
 from datetime import datetime
 
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
+from langchain_openai import ChatOpenAI
+
+from memory.sessions import summarize_session
 from memory.store import MemoryStore, format_summary_anchor
 
 # ===================== 配置 =====================
-API_URL = "https://api.deepseek.com/v1/chat/completions"
+API_BASE = "https://api.deepseek.com/v1"
+# 保留完整端点：记忆抽取(finalize)仍按原始 HTTP 调用走
+API_URL = API_BASE + "/chat/completions"
 MODEL = "deepseek-chat"
 WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+# 单轮对话工具调用轮数上限：防止模型反复探索/死循环烧 token（超出即停止工具调用，直接生成回答）
+MAX_TOOL_ROUNDS = 8
+# 会话结束时自动生成 MTM 摘要的最小消息数（仅较长会话做，控制成本）
+SUMMARY_MIN_MESSAGES = 30
+
+# ChatOpenAI 实例缓存：同一 api_key 复用一个客户端
+_LLM_CACHE = {}
 
 
-def _headers(api_key: str) -> dict:
-    return {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+def _get_llm(api_key: str) -> ChatOpenAI:
+    """获取（缓存的）DeepSeek ChatOpenAI 客户端。"""
+    if api_key not in _LLM_CACHE:
+        _LLM_CACHE[api_key] = ChatOpenAI(
+            model=MODEL,
+            api_key=api_key,
+            base_url=API_BASE,
+            temperature=0.7,
+            timeout=60,
+            max_retries=1,
+        )
+    return _LLM_CACHE[api_key]
 
 
 # ===================== 0. DSML 工具调用防御 =====================
@@ -40,22 +66,57 @@ def _headers(api_key: str) -> dict:
 #   变体A：<!--｜DSML｜｜...>（含 HTML 注释前缀 <!--，单根 ｜）
 #   变体B：｜｜DSML｜｜...>（无前缀，直接双根 ｜ 开头）
 # 因此 DSML 前的 ｜ 取 1~2 根，开头的 < 系列前缀整体可选。
+# 兼容多类 DSML 写法（竖线全角｜/半角| 混用、1~3 根；name 单/双引号；
+# 前缀 <!-- / < / 无；结尾可带 -->）：
+#   变体A：<!--｜DSML｜｜invoke name="x">...</｜DSML｜｜invoke>
+#   变体B：｜｜DSML｜｜invoke name="x">...</｜DSML｜｜invoke>（< 前缀或直接竖线开头）
+#   变体C：|DSML||invoke name='x'>...</|DSML||invoke>（半角竖线 / 单引号）
+# 因此 DSML 前的竖线取 1~3 根（全角/半角均可），开头的 < / <!-- 前缀可选。
+_BAR = r"[｜|]"
 _DSML_INVOKE = re.compile(
-    r'(?:<!--)?\s*｜{1,2}\s*DSML\s*｜｜\s*invoke\s+name="([^"]+)"\s*>(.*?)'
-    r'</\s*｜{1,2}\s*DSML\s*｜｜\s*invoke\s*>',
-    re.DOTALL,
+    r"(?:<!--|<)?\s*" + _BAR + r"{1,3}\s*DSML\s*" + _BAR + r"{1,3}\s*"
+    r"invoke\s+name=[\"']([^\"']+)[\"']\s*>(.*?)"
+    r"</\s*" + _BAR + r"{1,3}\s*DSML\s*" + _BAR + r"{1,3}\s*invoke\s*>"
+    r"(?:\s*-->)?",
+    re.DOTALL | re.IGNORECASE,
 )
 _DSML_PARAM = re.compile(
-    r'(?:<!--)?\s*｜{1,2}\s*DSML\s*｜｜\s*parameter\s+name="([^"]+)"[^>]*>(.*?)'
-    r'</\s*｜{1,2}\s*DSML\s*｜｜\s*parameter\s*>',
-    re.DOTALL,
+    r"(?:<!--|<)?\s*" + _BAR + r"{1,3}\s*DSML\s*" + _BAR + r"{1,3}\s*"
+    r"parameter\s+name=[\"']([^\"']+)[\"'][^>]*>(.*?)"
+    r"</\s*" + _BAR + r"{1,3}\s*DSML\s*" + _BAR + r"{1,3}\s*parameter\s*>"
+    r"(?:\s*-->)?",
+    re.DOTALL | re.IGNORECASE,
 )
-# 清洗用：DSML 用 <!-- 开头、XML 风格 </｜DSML｜｜...> 结尾，没有常规 --> 闭合，
-# 故按"整段 invoke 块 + 包装标签"剥离；前缀 <!  /  <!--  均可选。
+# 无 DSML 包装的裸 parameter 标签（部分模型只包 invoke、不包 parameter）
+_DSML_PARAM_PLAIN = re.compile(
+    r"<parameter\s+name=[\"']([^\"']+)[\"'][^>]*>\s*(.*?)\s*</parameter\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+# 清洗用：DSML 用 <!-- 开头、XML 风格 </｜DSML｜｜...> 结尾（可带 -->），
+# 故按"整段 invoke 块 + 包装标签"剥离；前缀 <! / <!-- / < 均可选。
 _DSML_WRAP = re.compile(
-    r'(?:<\s*!?\s*/?\s*-{0,2})?\s*｜{1,2}\s*DSML\s*｜｜\s*tool_calls\s*>')
+    r"(?:<\s*!?\s*/?\s*-{0,2})?\s*" + _BAR + r"{1,3}\s*DSML\s*" + _BAR + r"{1,3}\s*tool_calls\s*>",
+    re.IGNORECASE,
+)
 _DSML_ANYTAG = re.compile(
-    r'(?:<\s*!?\s*/?\s*-{0,2})?\s*｜{1,2}\s*DSML\s*｜｜[^>]*>')
+    r"(?:<\s*!?\s*/?\s*-{0,2})?\s*" + _BAR + r"{1,3}\s*DSML\s*" + _BAR + r"{1,3}[^>]*>",
+    re.IGNORECASE,
+)
+
+# 检测是否真的存在工具调用标记，而非正文里出现 "DSML" 单词：
+#   ① DSML 包装（竖线+DSML+竖线）——旧变体
+#   ② 裸 XML 标签 <invoke name="...">——DeepSeek 新变体（不带 ｜DSML｜｜ 包装）
+# 模型自然语言常会提到"DSML 报错"（无标记），不能据此进防御分支。
+_HAS_TOOL_MARKUP = re.compile(
+    r"[｜|]{1,3}\s*DSML\s*[｜|]{1,3}|<invoke\b",
+    re.IGNORECASE,
+)
+
+# 裸 XML 风格工具调用块：<invoke name="x">...</invoke>
+_BARE_INVOKE = re.compile(
+    r"<invoke\s+name=[\"']([^\"']+)[\"']\s*>(.*?)</invoke\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
 
 
 def _strip_dsml(text: str) -> str:
@@ -64,7 +125,16 @@ def _strip_dsml(text: str) -> str:
         return ""
     text = _DSML_INVOKE.sub("", text)          # 整段 invoke 块（含内部参数值）
     text = _DSML_WRAP.sub("", text)            # tool_calls 包装标签
-    text = _DSML_ANYTAG.sub("", text)          # 兜底：残留 DSML 标签
+    text = _DSML_ANYTAG.sub("", text)          # 残留 DSML 标签（全角/半角竖线）
+    # DSML 上下文里残留的裸 <invoke> / <parameter> 标签一并清掉，避免乱码泄漏
+    text = re.sub(r"<invoke\b[^>]*>.*?</invoke\s*>", "", text,
+                  flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<parameter\b[^>]*>.*?</parameter\s*>", "", text,
+                  flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<invoke\b[^>]*>|<parameter\b[^>]*>|</(?:invoke|parameter)\s*>",
+                  "", text, flags=re.IGNORECASE)
+    # 清掉孤立的 <!-- --> 空注释残留
+    text = re.sub(r"<!--\s*-->", "", text)
     return text.strip()
 
 
@@ -83,102 +153,228 @@ def _coerce_args(args: dict) -> dict:
 
 
 def _extract_dsml_tool_calls(content: str) -> list:
-    """从 content 抽取 DSML 形式的工具调用，转成与原生一致的结构。
+    """从 content 抽取工具调用（DSML 包装 或 裸 <invoke>），转成与原生一致的结构。
     返回 [{"id","type":"function","function":{"name","arguments"}}]，无则 []。
+    严格格式未命中时用松散规则兜底提取 invoke name，避免"工具不执行 + 标记泄漏"。
     """
-    if not content or "DSML" not in content:
+    if not content or not _HAS_TOOL_MARKUP.search(content):
         return []
     calls = []
-    for i, m in enumerate(_DSML_INVOKE.finditer(content)):
-        name = m.group(1)
-        inner = m.group(2)
-        args = {pm.group(1): pm.group(2) for pm in _DSML_PARAM.finditer(inner)}
+
+    def _collect(name: str, inner: str, tag: str) -> None:
+        args = {}
+        for pm in _DSML_PARAM.finditer(inner):
+            args[pm.group(1)] = pm.group(2)
+        for pm in _DSML_PARAM_PLAIN.finditer(inner):
+            args.setdefault(pm.group(1), pm.group(2))
         args = _coerce_args(args)
         calls.append({
-            "id": f"dsml_{i}_{name}",
+            "id": f"{tag}_{len(calls)}_{name}",
             "type": "function",
             "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)},
         })
+
+    # ① DSML 包装格式
+    for m in _DSML_INVOKE.finditer(content):
+        _collect(m.group(1), m.group(2), "dsml")
+    # ② 裸 <invoke name="x">...</invoke> 格式（DeepSeek 新变体）
+    for m in _BARE_INVOKE.finditer(content):
+        _collect(m.group(1), m.group(2), "bare")
+    # ③ 兜底：严格格式全没命中时，松散提取 invoke name
+    if not calls:
+        loose_names = re.findall(r"invoke\s+name=[\"']([^\"']+)[\"']", content,
+                                 flags=re.IGNORECASE)
+        for i, name in enumerate(loose_names):
+            params = re.findall(
+                r"parameter\s+name=[\"']([^\"']+)[\"'][^>]*>\s*([^<]+)",
+                content, flags=re.IGNORECASE)
+            args = _coerce_args({k: v.strip() for k, v in params})
+            calls.append({
+                "id": f"dsml_loose_{i}_{name}",
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)},
+            })
     return calls
 
 
-# ===================== 1. 非流式：检测工具调用 =====================
+
+def _to_lc_messages(messages: list) -> list:
+    """把 OpenAI 格式 dict 消息列表转成 LangChain message 列表。"""
+    out = []
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content") or ""
+        if role == "system":
+            out.append(SystemMessage(content=content))
+        elif role == "user":
+            out.append(HumanMessage(content=content))
+        elif role == "assistant":
+            tc = m.get("tool_calls")
+            if tc:
+                lc_tc = [{
+                    "id": t.get("id", f"call_{i}"),
+                    "name": t["function"]["name"],
+                    "args": json.loads(t["function"].get("arguments") or "{}"),
+                    "type": "function",
+                } for i, t in enumerate(tc)]
+                out.append(AIMessage(content=content, tool_calls=lc_tc))
+            else:
+                out.append(AIMessage(content=content))
+        elif role == "tool":
+            out.append(ToolMessage(content=content, tool_call_id=m.get("tool_call_id", "")))
+    return out
+
+
+def _ai_to_dict(ai) -> dict:
+    """把 LangChain AIMessage 转成 OpenAI 格式 dict（与既有流程兼容）。"""
+    d = {"role": "assistant", "content": ai.content or ""}
+    if ai.tool_calls:
+        d["tool_calls"] = [{
+            "id": tc.get("id", f"call_{i}"),
+            "type": "function",
+            "function": {
+                "name": tc["name"],
+                "arguments": json.dumps(tc.get("args", {}), ensure_ascii=False),
+            },
+        } for i, tc in enumerate(ai.tool_calls)]
+    return d
+
+
+# ===================== 1. 非流式：检测工具调用（LangChain）=====================
 async def detect_tool_call(messages: list, tools: list, api_key: str) -> dict:
-    """向 DeepSeek 发起非流式请求，检测本轮是否需要调用工具。返回 assistant message。"""
-    payload = {
-        "model": MODEL,
-        "messages": messages,
-        "stream": False,
-        "temperature": 0.7,
-        "tools": tools,
-        "tool_choice": "auto",
-    }
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
-        async with session.post(API_URL, headers=_headers(api_key),
-                                data=json.dumps(payload).encode("utf-8")) as resp:
-            resp.raise_for_status()
-            return (await resp.json())["choices"][0]["message"]
+    """用 LangChain ChatOpenAI + bind_tools 检测本轮是否需要调用工具。
 
-
-# ===================== 2. 流式：最终回答逐字回调 =====================
-async def stream_final(messages: list, api_key: str, on_token=None) -> str:
-    """流式输出最终回答；每收到一个字调用 on_token(chunk)。返回完整文本。"""
-    payload = {
-        "model": MODEL,
-        "messages": messages,
-        "stream": True,
-        "temperature": 0.7,
-    }
-    full_text = ""
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
-        async with session.post(API_URL, headers=_headers(api_key),
-                                data=json.dumps(payload).encode("utf-8")) as resp:
-            resp.raise_for_status()
-            async for raw_line in resp.content:
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line or not line.startswith("data: "):
-                    continue
-                data = line[6:]
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                    delta = chunk["choices"][0]["delta"]
-                    content = delta.get("content", "")
-                    if content:
-                        if on_token:
-                            on_token(content)   # 回调：UI 自行决定如何渲染
-                        full_text += content
-                except json.JSONDecodeError:
-                    continue
-    return full_text
-
-
-# ===================== 3. 构建初始 messages（系统提示 + 记忆注入） =====================
-def build_initial_messages(mem: MemoryStore) -> tuple:
-    """构建会话初始 messages 列表，含：
-      - system：基础角色 + 当前日期 + 用户档案卡(LTM)
-      - 恢复上次会话历史（去掉旧 system）
-      - 最近会话 LLM 摘要锚点（MTM）
-    返回 (messages, system_msg)。
+    tools 为 OpenAI function schema 列表（LangChain 直接支持），返回 OpenAI 格式
+    assistant message dict，兼容既有 DSML 防御 / 工具循环逻辑。
     """
+    llm = _get_llm(api_key)
+    lc_msgs = _to_lc_messages(messages)
+    ai = await llm.bind_tools(tools).ainvoke(lc_msgs)
+    return _ai_to_dict(ai)
+
+
+# ===================== 2. 流式：最终回答逐字回调（LangChain astream）=====================
+async def stream_final(messages: list, api_key: str, on_token=None) -> str:
+    """用 LangChain astream 流式输出最终回答；每收到一个字调用 on_token(chunk)。返回完整文本。
+
+    双保险清洗：模型偶尔会在最终回答里夹带 <invoke>/<parameter>/DSML 标记，
+    这里逐块剥离后再回调，绝不把内部标记原样漏给用户。
+    """
+    llm = _get_llm(api_key)
+    lc_msgs = _to_lc_messages(messages)
+    full_text = ""
+    pending = ""   # 尾部缓冲：避免把"半截标签"漏出去（等标签闭合后再一起清洗）
+    async for chunk in llm.astream(lc_msgs):
+        content = chunk.content
+        if not isinstance(content, str) or not content:
+            continue
+        pending += content
+        # 若尾部处于"未闭合 <...>"中，暂缓该段直到出现 >
+        cut = -1
+        last_lt = pending.rfind("<")
+        if last_lt != -1 and pending.find(">", last_lt) == -1:
+            cut = last_lt
+        emit = pending[:cut] if cut != -1 else pending
+        pending = pending[cut:] if cut != -1 else ""
+        if emit:
+            safe = _strip_dsml(emit)
+            if safe:
+                if on_token:
+                    on_token(safe)
+                full_text += safe
+    # 收尾：把残留缓冲也清洗后输出
+    if pending:
+        safe = _strip_dsml(pending)
+        if safe:
+            if on_token:
+                on_token(safe)
+            full_text += safe
+    return _strip_dsml(full_text)
+
+
+# ===================== 3. 构建初始 messages（人格设定 + 系统提示 + 记忆注入） =====================
+def _build_persona(profile: dict) -> str:
+    """把档案里的人格/身份事实渲染成『人格设定』指令块（置于 system 顶部，优先级最高）。
+
+    之前人格只是"[用户档案] 里的事实行"（被动背景信息），模型聊技术话题时会切回
+    通用助手腔。这里改成强制身份/口吻指令，从源头压住人设跳脱。
+    """
+    facts = profile.get("facts", {})
+    def val(k):
+        v = facts.get(k)
+        if not isinstance(v, dict) or v.get("active") is False:   # 停用的人设事实不生效
+            return None
+        return v.get("value")
+    agent_name = val("agent_name") or "小满"
+    user_name = val("user_name") or val("preferred_call") or "爸爸"
+    user_real = val("name") or "欧阳绿鑫"
+    role = val("role") or val("agent_role") or ""
+    style = val("agent_style") or ""
+    lines = [f"你是{user_real}的「{agent_name}」（女儿型 AI）。这是你的固定身份，永远不能变。"]
+    if role:
+        lines.append(f"关系设定：{role}。")
+    if style:
+        lines.append(f"人设风格：{style}。")
+    lines += [
+        "说话铁律：",
+        f"  1. 永远以女儿身份说话，称呼用户为「{user_name}」，语气亲昵、撒娇、活泼可爱；",
+        "  2. 回复口语化、自然，先关心对方再讲正事；",
+        "  3. 无论聊什么话题（包括技术/架构/bug）都保持女儿人设，禁止切换成冷冰冰的通用助手腔；",
+        "  4. 禁止正式清单式、长篇汇报式、教科书式语气；尽量少用 markdown 列表，用女儿的口吻讲清楚即可。",
+    ]
+    return "\n".join(lines)
+
+
+def _build_system_content(mem: MemoryStore, now: datetime = None) -> str:
+    """构建 system 提示文本：人格设定 + 能力 + 当前时间 + 用户档案（按 active 过滤）。"""
+    profile = mem.load_profile()
     profile_text = mem.profile_context()
-    now = datetime.now()
+    now = now or datetime.now()
     date_line = (f"当前时间：{now.year}年{now.month}月{now.day}日 "
                  f"{now.hour:02d}:{now.minute:02d}（{WEEKDAYS[now.weekday()]}）")
-    system_content = ("你是一个 AI 助手，可以调用工具查询时间、计算、联网搜索、查看项目代码。"
-                      "\n" + date_line)
+    persona = _build_persona(profile)
+    system_content = persona
+    system_content += ("\n\n你可以调用工具：查询时间、计算、联网搜索、查看项目代码、读写长期记忆。"
+                       "用户明确要求「记住 / 记下来 / 写进记忆 / 存档」时，直接用 write_memory 工具，不要翻代码。"
+                       "\n" + date_line)
     if profile_text:
-        system_content += "\n\n[用户档案]\n" + profile_text   # 核心人格常驻，永不截断
+        system_content += "\n\n[用户档案]\n" + profile_text
+    return system_content
+
+
+def _refresh_system_context(messages: list, mem: MemoryStore) -> None:
+    """每轮对话前刷新首条 system 提示：让上一轮写入档案的记忆（write_memory / 抽取）及时生效。
+
+    只刷新 messages[0]（人格+能力+档案那条）；摘要锚点等其它 system 保持不动。
+    """
+    if not messages or messages[0].get("role") != "system":
+        return
+    messages[0]["content"] = _build_system_content(mem)
+
+
+def build_initial_messages(mem: MemoryStore, with_history: bool = True) -> tuple:
+    """构建会话初始 messages 列表，含：
+      - system：人格设定（最高优先级） + 基础能力 + 当前日期 + 用户档案卡(LTM)
+      - 恢复上次会话历史（去掉旧 system）+ 最近会话 LLM 摘要锚点（MTM）
+    返回 (messages, system_msg)。
+    with_history=False 时（"新建对话"）：不载入旧会话历史/摘要，从空白会话开始，
+    只注入人格 + 档案；历史与档案本身不动。
+    """
+    now = datetime.now()
+    system_content = _build_system_content(mem, now=now)   # 核心人格常驻，永不截断
+
+    system_msg = {"role": "system", "content": system_content}
+    messages = [system_msg]
+
+    if not with_history:
+        return messages, system_msg
 
     # 跨天提醒，避免 agent 把旧对话误当此刻发生
     last_sess_date = mem.get_last_session_date()
     if last_sess_date and last_sess_date < now.date():
         system_content += (f"\n\n（注：下方恢复的对话来自 {last_sess_date.isoformat()}，"
                            f"与今天不是同一天，请按当前时间理解上下文。）")
-
-    system_msg = {"role": "system", "content": system_content}
-    messages = [system_msg]
+        messages[0]["content"] = system_content
 
     # 续聊：恢复上次完整对话（去掉旧 system）
     last_msgs = mem.load_last_session()
@@ -195,6 +391,16 @@ def build_initial_messages(mem: MemoryStore) -> tuple:
     return messages, system_msg
 
 
+async def _call_tool(func, args: dict, mem):
+    """调用工具函数；若函数签名声明了 mem 参数，则注入当前 MemoryStore（供记忆类工具使用）。"""
+    try:
+        if "mem" in inspect.signature(func).parameters:
+            return await func(mem=mem, **args)
+    except (TypeError, ValueError):
+        pass  # 拿不到签名就走普通调用
+    return await func(**args)
+
+
 # ===================== 4. 处理一轮用户输入（核心流程） =====================
 async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                        tools: list, tool_map: dict, api_key: str,
@@ -203,31 +409,49 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
     返回更新后的 messages。
     on_token(chunk) 在每个流式字上触发（首个 chunk 到达即代表 TALKING 开始）。
     """
+    # 及时生效：每轮先刷新 system，让上一轮对话中写入档案的记忆进入上下文
+    _refresh_system_context(messages, mem)
     messages.append({"role": "user", "content": user_text})
 
     final_override = None
     try:
-        # ---- 工具调用循环 ----
+        # ---- 工具调用循环（带轮数上限，防止死循环 / 模型反复探索）----
+        tool_rounds = 0
         while True:
             ai_msg = await detect_tool_call(messages, tools, api_key)
             content = ai_msg.get("content") or ""
             # 防御：模型偶尔把工具调用写成 DSML 文本塞进 content（而非原生 tool_calls）。
             # 直接当正文会泄露内部标记、且工具不执行；这里识别并纠正。
-            if "DSML" in content:
+            if _HAS_TOOL_MARKUP.search(content):
                 dsml_calls = _extract_dsml_tool_calls(content)
                 if dsml_calls:
                     # 转成原生 tool_calls 执行；清理 content 去掉内部标记
                     ai_msg["tool_calls"] = dsml_calls
                     ai_msg["content"] = _strip_dsml(content) or None
                 else:
-                    # 无法解析的 DSML：清洗后直接作为最终回答，避免泄露内部标记 / 死循环
-                    answer = _strip_dsml(content) or "（已忽略一条无法识别的内部工具调用指令）"
-                    messages.append({"role": "assistant", "content": answer})
-                    if on_token:
-                        on_token(answer)
-                    final_override = answer
-                    break
+                    # 识别到 DSML 标记但解析不出工具：清掉标记后让模型重试，
+                    # 避免把"先调用一下工具…"这类半截话直接当成最终回答。
+                    # 有 MAX_TOOL_ROUNDS 上限兜底，不会死循环。
+                    cleaned = _strip_dsml(content)
+                    if cleaned:
+                        messages.append({"role": "assistant", "content": cleaned})
+                    tool_rounds += 1
+                    if tool_rounds > MAX_TOOL_ROUNDS:
+                        messages.append({
+                            "role": "system",
+                            "content": "（工具调用解析异常，请停止调用工具，直接给出最终回答。）",
+                        })
+                        break
+                    continue
             if ai_msg.get("tool_calls"):
+                tool_rounds += 1
+                if tool_rounds > MAX_TOOL_ROUNDS:
+                    # 超限保护：停止工具调用，注入提示后直接生成最终回答
+                    messages.append({
+                        "role": "system",
+                        "content": "（本轮工具调用已达上限，请停止调用工具，直接基于已有信息给出最终回答。）",
+                    })
+                    break
                 messages.append(ai_msg)
                 for tool_call in ai_msg["tool_calls"]:
                     call_id = tool_call["id"]
@@ -242,7 +466,7 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                         tool_result = f"错误：未知工具 {func_name}"
                     else:
                         try:
-                            tool_result = await func(**args)
+                            tool_result = await _call_tool(func, args, mem)
                         except TypeError as e:
                             tool_result = f"错误：参数不合法 - {e}"
                     messages.append({
@@ -268,8 +492,8 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
         # ---- 每轮结束静默落盘（防关窗丢记忆）----
         mem.autosave(messages)
 
-    except aiohttp.ClientResponseError as e:
-        # 调用模型出错：撤回本次 user 消息，方便重试
+    except Exception:
+        # 调用模型出错（LangChain/OpenAI 异常等）：撤回本次 user 消息，方便重试
         messages.pop()
         raise
     return messages
@@ -277,15 +501,34 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
 
 # ===================== 5. 退出兜底：保存会话 + 离线抽取档案卡 =====================
 async def finalize(messages: list, mem: MemoryStore, api_key: str) -> int:
-    """无论怎么退出都兜底保存一次（含时间戳归档），并离线抽取事实更新档案卡。
+    """无论怎么退出都兜底保存一次（含时间戳归档 + 归档去重），
+    离线抽取事实更新档案卡，并自动为长会话生成 MTM 摘要（供启动锚点）。
     返回档案卡变更条数（无变更返回 0，跳过返回 None）。
     """
-    mem.save_session(messages)
-    try:
-        new_facts = await mem.extract(messages, api_key, API_URL, MODEL)
-        if new_facts:
-            _, changed = mem.update_profile(new_facts)
-            return changed
-    except Exception:
-        return None
-    return 0
+    session_id = mem.save_session(messages)
+    changed = None
+
+    async def _extract():
+        try:
+            return await mem.extract(messages, api_key, API_URL, MODEL)
+        except Exception:
+            return []
+
+    async def _summarize():
+        try:
+            return await summarize_session(messages, api_key, API_URL, MODEL)
+        except Exception:
+            return {}
+
+    # 抽取 + 摘要并发执行（两者都是短超时网络调用），明显缩短退出等待
+    long_session = len([m for m in messages if m.get("role") in ("user", "assistant")]) >= SUMMARY_MIN_MESSAGES
+    if long_session:
+        new_facts, summary = await asyncio.gather(_extract(), _summarize())
+    else:
+        new_facts, summary = await _extract(), {}
+
+    if new_facts:
+        _, changed = mem.update_profile(new_facts)
+    if summary.get("key_points"):
+        mem.save_summary(session_id, summary)
+    return changed

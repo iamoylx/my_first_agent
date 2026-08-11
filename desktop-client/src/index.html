@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Desktop</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- ==================== 主容器 ==================== -->
+    <div class="app-container">
+
+        <!-- ===== 左侧：立绘展示区 ===== -->
+        <aside class="character-panel">
+            <!-- 【素材路径】三视图：素材/三视图/1000148096.jpg（正|侧|背 横排）
+                 下面容器用 CSS 裁切只显示左侧「正视图」区域，
+                 避免整张参考表直接丢进去。
+                 后续可替换为已抠好的透明 PNG 以获得最佳效果。 -->
+            <div class="illustration-wrap">
+                <img id="main-illustration"
+                     class="illustration"
+                     src="assets/character-front.png"
+                     alt="Character Front View"
+                     draggable="false" />
+            </div>
+
+            <!-- 角色信息卡片 -->
+            <div class="char-info-card">
+                <span class="char-name">小满</span>
+                <span class="char-status" id="char-status">在线</span>
+            </div>
+
+            <!-- 底部操作按钮 -->
+            <div class="panel-actions">
+                <button class="action-btn" id="btn-pet-mode" title="最小化到桌宠模式">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                        <circle cx="12" cy="7" r="4"/>
+                    </svg>
+                    桌宠模式
+                </button>
+                <button class="action-btn" id="btn-reset-chat" title="新建对话（归档旧对话，档案卡保留）">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="1 4 1 10 7 10"/>
+                        <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+                    </svg>
+                    新建对话
+                </button>
+            </div>
+        </aside>
+
+        <!-- ===== 右侧：聊天区域 ===== -->
+        <main class="chat-panel">
+            <!-- 聊天头部 -->
+            <header class="chat-header">
+                <div class="chat-header-left">
+                    <img class="chat-avatar" src="assets/avatar.png" alt="小满" draggable="false">
+                    <h1 class="chat-title">小满</h1>
+                    <span class="header-status" id="header-status">在线</span>
+                </div>
+                <div class="header-indicators">
+                    <button class="header-btn" id="btn-memory" title="档案卡管理">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                            <circle cx="12" cy="7" r="4"/>
+                        </svg>
+                        记忆
+                    </button>
+                    <span class="dot dot-green" id="server-status" title="服务器状态"></span>
+                </div>
+            </header>
+
+            <!-- 消息列表 -->
+            <div class="messages-container" id="messages">
+                <!-- 欢迎消息 -->
+                <div class="message message-system">
+                    <div class="message-bubble">
+                        你好呀～我是你的 Agent 助手，有什么可以帮你的吗？
+                    </div>
+                </div>
+            </div>
+
+            <!-- 输入区域 -->
+            <footer class="input-area">
+                <div class="input-wrapper">
+                    <textarea
+                        id="user-input"
+                        placeholder="输入消息... (Enter 发送，Shift+Enter 换行)"
+                        rows="1"
+                        autofocus
+                    ></textarea>
+                    <button class="send-btn" id="btn-send" title="发送消息">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="22" y1="2" x2="11" y2="13"/>
+                            <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="input-hint">
+                    按 Enter 发送 · Shift+Enter 换行 · 记忆已持久化到本地
+                </div>
+            </footer>
+        </main>
+    </div>
+
+    <!-- 加载遮罩（首次连接时显示） -->
+    <div class="loading-overlay" id="loading-overlay">
+        <div class="loading-content">
+            <div class="loading-spinner"></div>
+            <p>正在连接 Agent 服务...</p>
+        </div>
+    </div>
+
+    <!-- 致命错误显示（调试用，顶部浅色横幅，避免误判为黑屏） -->
+    <div id="fatal-error" style="display:none; position:fixed; top:0; left:0; right:0; z-index:99999; background:#fff3f3; color:#c0392b; border-bottom:2px solid #c0392b; padding:12px 20px; font-family:monospace; font-size:13px; white-space:pre-wrap;"></div>
+
+    <!-- ==================== 档案卡管理视图 ==================== -->
+    <section id="memory-view" class="memory-view" hidden>
+        <header class="memory-header">
+            <button class="memory-nav-btn" id="btn-memory-back" title="返回对话">← 返回对话</button>
+            <h2 class="memory-title">档案卡管理</h2>
+            <button class="memory-nav-btn memory-add-btn" id="btn-memory-add" title="新增一条自定义事实/偏好">＋ 新建</button>
+        </header>
+        <p class="memory-hint">√=生效 · ×=停用（停用后不再注入对话）· 删除会先存档保留 · 改动在下次会话生效</p>
+        <div class="memory-body">
+            <div class="memory-section">
+                <h3 class="memory-section-title">事实</h3>
+                <div class="memory-list" id="facts-list"></div>
+            </div>
+            <div class="memory-section">
+                <h3 class="memory-section-title">偏好</h3>
+                <div class="memory-list" id="prefs-list"></div>
+            </div>
+        </div>
+        <div class="memory-add-form" id="memory-add-form" hidden>
+            <input id="add-key" placeholder="key（英文小写下划线，如 pref_drink）" />
+            <input id="add-value" placeholder="内容（如 冰美式）" />
+            <select id="add-type">
+                <option value="fact">事实</option>
+                <option value="preference">偏好</option>
+            </select>
+            <button class="memory-add-ok" id="btn-add-confirm">添加</button>
+            <button class="memory-add-cancel" id="btn-add-cancel">取消</button>
+        </div>
+    </section>
+
+    <script src="app.js"></script>
+</body>
+</html>

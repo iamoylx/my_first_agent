@@ -13,6 +13,7 @@ from skills import collect_tools
 from skills.web_search import TOOLS as ws_tools, TOOL_MAP as ws_map
 from skills.basic_tools import TOOLS as bt_tools, TOOL_MAP as bt_map
 from skills.code_tools import TOOLS as ct_tools, TOOL_MAP as ct_map
+from skills.memory_tools import TOOLS as mt_tools, TOOL_MAP as mt_map
 
 # ============ 终端命令分发 ============
 from commands import is_command, run_command
@@ -31,7 +32,7 @@ if not API_KEY:
 
 # ============ 改动：tools/tool_map 改为自动聚合，不再手写 ============
 tools, tool_map = collect_tools((ws_tools, ws_map), (bt_tools, bt_map),
-                                (ct_tools, ct_map))
+                                (ct_tools, ct_map), (mt_tools, mt_map))
 
 # ===================== 1 & 2. 模型调用已抽离至 core/agent_core.py =====================
 # 原 llm_detect_tool_call / llm_stream_final_answer 已迁移到 core 包，

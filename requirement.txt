@@ -1,0 +1,36 @@
+# ============================================================
+# AGENT —— 记忆增强型终端 / 桌面 Agent（DeepSeek Function Calling）
+# Python 运行时依赖清单（pip install -r requirement.txt）
+# ============================================================
+
+# ---- 运行必需 ----
+aiohttp>=3.9            # 异步 HTTP：终端/桌宠主循环与 DeepSeek API、Tavily 搜索、
+                        # 本地 HTTP 服务(agent-server.py) 均依赖
+
+# ---- 可选（不装则自动回退字符启发式，功能不受影响）----
+tiktoken>=0.5           # 更精确的 token 估算，memory/token_window.py 的 STM 滑动窗口
+                        # 用于判断是否超窗口；缺失时回退 CJK≈1字/英文按字母数粗估
+
+# ---- LangChain 后端（core/agent_core.py 的模型/工具调用/流式层）----
+langchain-core>=1.4     # 消息模型 / bind_tools / astream 基础
+langchain-openai>=1.3   # ChatOpenAI（DeepSeek 走 OpenAI 兼容端点）
+
+# ============================================================
+# 运行环境要求（非 pip 依赖，但必须存在）
+# ============================================================
+# Python:       >= 3.10（开发/运行环境使用 3.13.12 托管 Python）
+# 网络:         必须可联网访问 https://api.deepseek.com
+#
+# ---- 所需环境变量（代码一律用 os.getenv 读取，切勿硬编码到源码）----
+# DEEPSEEK_API_KEY  必填    DeepSeek API 密钥；缺失则 AGENT.py / agent-server.py 启动即报错
+# TAVILY_API_KEY    可选    联网搜索 web_search 技能用；缺失时 web_search 返回"未配置"提示，不影响其它功能
+# AGENT_USER_ID     可选    记忆隔离的用户维度，默认 "default"；不同值对应 memory_data/users/<id>/ 独立记忆
+# AGENT_PORT        可选    桌面端 Python 后端监听端口，默认 18789（仅 desktop-client 使用）
+#
+# ---- 桌面客户端（desktop-client）构建前提（非 pip）----
+# 需另行安装：
+#   - Rust + Cargo（含 MSVC 工具链，Windows 推荐 Visual Studio Build Tools）
+#   - Node.js + npm（Tauri CLI 走 @tauri-apps/cli ^2.11.4）
+#   - 系统 WebView2 运行时（本机依赖 Windows 自带 EdgeWebView，详见 README / handoff.md）
+# Rust 依赖见 desktop-client/src-tauri/Cargo.toml：
+#   tauri / serde / serde_json / tokio / reqwest

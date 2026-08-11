@@ -56,7 +56,7 @@ async def summarize_session(messages, api_key, api_url, model):
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as s:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
             async with s.post(api_url, headers=headers,
                               data=json.dumps(payload).encode()) as resp:
                 resp.raise_for_status()

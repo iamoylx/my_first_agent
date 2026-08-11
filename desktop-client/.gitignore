@@ -1,0 +1,28 @@
+# 依赖目录
+node_modules/
+
+# Tauri 编译产物
+src-tauri/target/
+
+# 打包输出
+dist/
+*.exe
+*.msi
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 环境变量（含密钥）
+.env
+.env.local

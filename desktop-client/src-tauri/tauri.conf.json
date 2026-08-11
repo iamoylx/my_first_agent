@@ -1,0 +1,59 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicepkg/tauri-conf-schema/v2/schema.json",
+  "productName": "小满",
+  "version": "0.1.0",
+  "identifier": "com.agent.desktop",
+  "build": {
+    "frontendDist": "../src",
+    "devUrl": null,
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "小满",
+        "width": 1100,
+        "height": 700,
+        "minWidth": 800,
+        "minHeight": 500,
+        "center": true,
+        "decorations": true,
+        "transparent": false,
+        "resizable": true,
+        "url": "index.html"
+      },
+      {
+        "label": "pet",
+        "title": "小满",
+        "width": 260,
+        "height": 300,
+        "x": 100,
+        "y": 100,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "visible": false,
+        "url": "pet.html"
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "withGlobalTauri": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

@@ -1,0 +1,276 @@
+/* ============================================
+   Agent Desktop — 桌宠悬浮窗样式
+   透明窗口 · 6状态精灵图 · 聊天气泡 · 控制栏
+   参考：Codex Pet（OpenAI 桌面宠物）
+   ============================================ */
+
+:root {
+    --accent: #d4a5b8;
+    --accent-light: #f2e0e8;
+    --text-primary: #1a1a1e;
+    --text-secondary: #6b6775;
+}
+
+/* ============ 全局：透明窗口 ============ */
+html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: transparent !important;
+    -webkit-app-region: no-drag;
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    user-select: none;
+}
+
+/* ============ 桌宠容器 ============ */
+.pet-container {
+    position: relative;
+    width: 100%; height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* 不用系统拖拽区：由 JS 处理鼠标事件实现"按住/左右滑"状态与窗口拖动 */
+    cursor: grab;
+}
+.pet-container:active { cursor: grabbing; }
+
+/* ============ 控制栏（右上角，始终可见）=========== */
+.pet-controls {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    display: flex;
+    gap: 4px;
+    z-index: 100;
+    -webkit-app-region: no-drag;   /* 控制栏不触发拖拽 */
+    pointer-events: auto;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+}
+
+/* 鼠标悬停或容器活跃时显示控制栏 */
+.pet-container:hover .pet-controls,
+.pet-controls:hover { opacity: 1; }
+
+.pet-ctrl-btn {
+    width: 24px; height: 24px;
+    border: none;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(8px);
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: all 0.2s ease;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+.pet-ctrl-btn:hover {
+    transform: scale(1.15);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.pet-ctrl-close:hover {
+    background: #c97b7b;
+    color: white;
+}
+
+.pet-ctrl-size {
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+}
+.pet-ctrl-size:hover {
+    background: var(--accent-light);
+    color: var(--text-primary);
+}
+
+.pet-ctrl-main:hover {
+    background: var(--accent-light);
+    color: var(--text-primary);
+}
+
+/* ============ 角色状态图（6状态）============
+
+   素材：assets/states/{idle,sleep,press,swipe-left,swipe-right,response-done}.png
+   每个状态一张独立透明 PNG（由 素材/状态图/1000148095.png 抠图规范化而来，
+   统一 240×320 画布、角色居中）。
+
+   状态对应：
+     idle(待机) / sleep(睡觉) / press(按住)
+     swipe-left(左滑) / swipe-right(右滑) / response-done(回复完成)
+
+   CSS 通过 background-image 切换状态。
+*/
+.pet-sprite {
+    width: 180px;
+    height: 240px;
+    background-repeat: no-repeat;
+    background-position: center;
+    /* 每状态一张独立透明 PNG，contain 完整显示角色 */
+    background-size: contain;
+
+    transition: opacity 0.2s ease;
+    pointer-events: none;     /* 让鼠标事件穿透到容器（用于拖拽/点击） */
+    image-rendering: auto;
+}
+
+/* ---- 6 种状态：各自独立的透明状态图 ---- */
+.pet-sprite.state-idle          { background-image: url('assets/states/idle.png'); }
+.pet-sprite.state-sleep         { background-image: url('assets/states/sleep.png'); }
+.pet-sprite.state-press         { background-image: url('assets/states/press.png'); }
+.pet-sprite.state-swipe-left    { background-image: url('assets/states/swipe-left.png'); }
+.pet-sprite.state-swipe-right   { background-image: url('assets/states/swipe-right.png'); }
+.pet-sprite.state-response-done { background-image: url('assets/states/response-done.png'); }
+
+/* ---- 状态切换动画 ---- */
+.pet-switching {
+    animation: pet-bounce 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes pet-bounce {
+    0%   { transform: scale(1); }
+    40%  { transform: scale(1.12); }
+    70%  { transform: scale(0.94); }
+    100% { transform: scale(1); }
+}
+
+/* ============ 聊天气泡 ============ */
+.chat-bubble {
+    position: absolute;
+    bottom: 78%;
+    left: 50%;
+    transform: translateX(-50%) translateY(10px);
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 150px;
+    max-width: 250px;
+    padding: 10px 14px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(238,238,238,0.94));
+    backdrop-filter: blur(12px);
+    border-radius: 16px;
+    border: 1px solid rgba(210, 210, 210, 0.6);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08), 0 1px 4px rgba(180, 180, 180, 0.12);
+
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+
+    -webkit-app-region: no-drag;
+    pointer-events: auto;
+    z-index: 10;
+}
+
+.chat-bubble.visible {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(-50%) translateY(0);
+}
+
+.bubble-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 2px solid #fff;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.10);
+    flex-shrink: 0;
+}
+
+.bubble-body { flex: 1; min-width: 0; }
+
+.bubble-text {
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--text-primary);
+    margin: 0;
+    word-break: break-word;
+}
+
+/* 气泡小尾巴 */
+.bubble-tail {
+    position: absolute;
+    bottom: -7px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 14px; height: 14px;
+    background: rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(12px);
+    border-right: 1px solid rgba(212, 165, 184, 0.25);
+    border-bottom: 1px solid rgba(212, 165, 184, 0.25);
+    clip-path: polygon(0 0, 100% 0, 50% 100%);
+}
+
+/* 气泡关闭按钮 */
+.bubble-close {
+    position: absolute;
+    top: -5px; right: -5px;
+    width: 18px; height: 18px;
+    border: none;
+    border-radius: 50%;
+    background: #e8e4ea;
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: all 0.2s ease;
+    padding: 0;
+}
+.chat-bubble:hover .bubble-close { opacity: 1; }
+.bubble-close:hover { background: var(--accent); color: white; }
+
+/* ============ 点击提示 ============ */
+.click-hint {
+    position: absolute;
+    bottom: 6px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    opacity: 0.55;
+    transition: opacity 0.3s ease;
+    pointer-events: none;
+}
+.click-hint.hidden { opacity: 0; }
+
+/* ============ 特效动画 ============ */
+
+/* idle：轻微呼吸浮动 */
+@keyframes pet-idle-float {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(-3px); }
+}
+.pet-sprite.state-idle {
+    animation: pet-idle-float 3s ease-in-out infinite;
+}
+
+/* sleep：更慢的呼吸 */
+@keyframes pet-sleep-breath {
+    0%, 100% { transform: translateY(0) scale(1); }
+    50%      { transform: translateY(-2px) scale(1.02); }
+}
+.pet-sprite.state-sleep {
+    animation: pet-sleep-breath 4s ease-in-out infinite;
+}
+
+/* response-done：开心弹跳 */
+@keyframes pet-happy-bounce {
+    0%, 100% { transform: translateY(0) rotate(0deg); }
+    25%      { transform: translateY(-6px) rotate(-3deg); }
+    50%      { transform: translateY(-3px) rotate(0deg); }
+    75%      { transform: translateY(-6px) rotate(3deg); }
+}
+.pet-sprite.state-response-done {
+    animation: pet-happy-bounce 1.2s ease-in-out 2;
+    animation-delay: 0.2s;
+}

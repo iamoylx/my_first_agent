@@ -11,6 +11,24 @@ import json
 import aiohttp                 # 离线抽取时复用，保证本模块自包含
 from datetime import datetime
 
+# 同义 key → 规范 key：抽取/迁移时把重复事实归一到一个 key（latest-wins 语义保留）。
+# 仅收录"语义明确等价"的映射，避免误合并。
+CANONICAL_KEYS = {
+    "hometown": "city",                        # 江西
+    "school": "university",                    # 重庆邮电大学
+    "dietary_preference": "food_preference",   # 无辣不欢
+    "spice_preference": "food_preference",     # 无辣不欢
+    "pref_milk": "habit",                      # 睡前喝牛奶
+    "preferred_answer_style": "pref_answer_style",  # 带爱心
+    "sleep_schedule": "wake_time",             # 凌晨2点睡9点起
+}
+
+
+def canonical_key(key: str) -> str:
+    """把同义 key 归一为规范 key（未收录则原样返回）。"""
+    return CANONICAL_KEYS.get(key, key)
+
+
 # 抽取提示词：抽两类高信号、稳定的用户记忆——事实 + 偏好/意图，明确禁止编造/猜测。
 EXTRACT_PROMPT = (
     "你是记忆抽取器。请从下面的对话中提取关于【用户】的以下内容：\n"
@@ -21,7 +39,12 @@ EXTRACT_PROMPT = (
     "1) 只提取对话中明确说出的内容，禁止猜测或推断；\n"
     "2) 对每条给出 confidence（0~1），不确定就别提；\n"
     "3) 每条用 type 标注：事实填 \"fact\"，偏好/意图填 \"preference\"；\n"
-    "4) 返回 JSON，格式："
+    "4) key 用语义化英文小写下划线，同一事实永远用同一个 key（例如：城市=city、学校=university、"
+    "饮食偏好=food_preference、作息=wake_time、回答风格=pref_answer_style、习惯=habit、名字=name），"
+    "遇到同义内容复用已有 key，禁止为同一事实造新 key；\n"
+    "5) 不要抽取时间性/一次性内容为稳定事实（当前时间、当天/明天的计划、刚去过哪、一次性的活动），"
+    "除非用户明确说\"记住/以后都\"；\n"
+    "6) 返回 JSON，格式："
     '{"facts":[{"key":"name","value":"小明","confidence":0.95,"type":"fact"},'
     '{"key":"pref_answer_style","value":"要简洁、少废话","confidence":0.8,"type":"preference"}]}；'
     "若没有可提取的内容，返回 {\"facts\":[]}。\n"
@@ -43,7 +66,7 @@ def merge_facts(profile, extracted):
     now = datetime.now().isoformat(timespec="seconds")
     changed = 0
     for item in extracted:
-        key = item.get("key")
+        key = canonical_key(item.get("key"))   # 同义 key → 规范 key
         value = item.get("value")
         conf = float(item.get("confidence", 1.0))
         ftype = item.get("type", "fact")
@@ -51,12 +74,14 @@ def merge_facts(profile, extracted):
             continue
         old = facts.get(key)
         if old is None:
-            # 全新事实，直接写入
-            facts[key] = {"value": value, "confidence": conf, "type": ftype, "updated_at": now}
+            # 全新事实，直接写入（默认生效）
+            facts[key] = {"value": value, "confidence": conf, "type": ftype,
+                          "updated_at": now, "active": True}
             changed += 1
         elif conf >= float(old.get("confidence", 0)):
-            # latest-wins：新值置信度不低于旧值 → 覆盖（含 type 更新）
-            facts[key] = {"value": value, "confidence": conf, "type": ftype, "updated_at": now}
+            # latest-wins：新值置信度不低于旧值 → 覆盖（保留原生效开关状态）
+            facts[key] = {"value": value, "confidence": conf, "type": ftype,
+                          "updated_at": now, "active": old.get("active", True)}
             changed += 1
         # 否则：新值置信度更低，保留旧值，跳过（防低置信度覆盖）
     return profile, changed
@@ -79,7 +104,10 @@ def _is_core(key: str, v: dict) -> bool:
 def _fact_line(k: str, v: dict) -> str:
     t = v.get("type")
     tag = "偏好" if t == "preference" else ("角色" if t == "role" else "事实")
-    return f"- [{tag}] {k}: {v['value']}"
+    val = v["value"]
+    if isinstance(val, list):          # 多条记录（如 important_notes）渲染成可读文本
+        val = "；".join(str(x) for x in val)
+    return f"- [{tag}] {k}: {val}"
 
 
 def _fact_ts(item) -> "datetime":
@@ -104,6 +132,10 @@ def to_context_text(profile, max_chars=2000):
         return ""
     core, regular = [], []
     for k, v in facts.items():
+        if v.get("type") == "event":     # 事件型/时间敏感事实不注入 system
+            continue
+        if v.get("active") is False:     # 用户手动停用的事实不注入
+            continue
         (core if _is_core(k, v) else regular).append((k, v))
 
     # 核心：完整保留，置顶
@@ -145,7 +177,7 @@ async def _extract_call(text, api_key, api_url, model):
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as s:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
             async with s.post(api_url, headers=headers,
                               data=json.dumps(payload).encode()) as resp:
                 resp.raise_for_status()

@@ -14,6 +14,7 @@
 #   - profile.merge_facts / profile.to_context_text / profile.extract_facts
 #   - sessions.sanitize
 #   - token_window.prune
+import hashlib
 import json
 import os
 from datetime import datetime, timedelta
@@ -50,6 +51,7 @@ class MemoryStore:
         self._legacy_profile = os.path.join(self.base_dir, "profile.json")
         self._legacy_sessions_dir = os.path.join(self.base_dir, "sessions")
         self._profile_cache = None   # 运行时缓存，避免反复读盘
+        self._profile_mtime = None   # 缓存对应的 profile.json 修改时间（外部改动时失效缓存）
         self._pending_extract = []   # 增量抽取缓冲：累积本轮新增的 user/assistant 文本
 
     # ===================== 路径与目录 =====================
@@ -71,9 +73,15 @@ class MemoryStore:
         """
         读取档案卡：优先新路径 users/<id>/profile.json；
         缺失则回退旧扁平 memory/profile.json（只读取，不改动旧文件）。
+        缓存按文件 mtime 自动失效：外部（迁移/多进程）改动后能读到最新。
         """
         if use_cache and self._profile_cache is not None:
-            return self._profile_cache
+            try:
+                mt = os.path.getmtime(self.profile_path) if os.path.exists(self.profile_path) else None
+            except OSError:
+                mt = None
+            if mt == self._profile_mtime:
+                return self._profile_cache
         if os.path.exists(self.profile_path):
             data = self._read_json(self.profile_path, {"version": 1, "facts": {}})
         elif os.path.exists(self._legacy_profile):          # 向后兼容：读旧位置
@@ -81,13 +89,19 @@ class MemoryStore:
         else:
             data = {"version": 1, "facts": {}}
         data.setdefault("facts", {})
+        data.setdefault("events", {})
         self._profile_cache = data
+        try:
+            self._profile_mtime = os.path.getmtime(self.profile_path) if os.path.exists(self.profile_path) else None
+        except OSError:
+            self._profile_mtime = None
         return data
 
     def save_profile(self, profile: dict) -> dict:
         """原子写盘到【新路径】；绝不写旧扁平路径，保证旧数据不被覆盖。"""
         self._ensure()
         profile = dict(profile)
+        profile.setdefault("events", {})
         profile["updated_at"] = datetime.now().isoformat(timespec="seconds")
         tmp = self.profile_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -106,6 +120,89 @@ class MemoryStore:
         if changed:
             self.save_profile(profile)
         return profile, changed
+
+    def list_events(self) -> dict:
+        """读取接口·事件型/时间敏感事实（不注入 system，供展示/检索）。"""
+        return self.load_profile().get("events", {})
+
+    def record_event(self, key: str, value, confidence: float = 0.9,
+                     occurred_at: str = None) -> dict:
+        """写入接口·记录一条事件型事实（当前状态/当天计划/刚发生的事）。"""
+        profile = self.load_profile()
+        events = profile.setdefault("events", {})
+        now = datetime.now().isoformat(timespec="seconds")
+        events[key] = {
+            "value": value,
+            "confidence": confidence,
+            "type": "event",
+            "occurred_at": occurred_at or now,
+            "updated_at": now,
+        }
+        self.save_profile(profile)
+        return events[key]
+
+    # ===================== 档案卡人工管理（客户端记忆 UI） =====================
+    def list_profile_items(self) -> dict:
+        """读取接口·供管理页展示：事实与偏好分栏（每项含 active 生效开关）。"""
+        facts = self.load_profile().get("facts", {})
+        items = []
+        for k, v in facts.items():
+            if v.get("type") == "event":
+                continue
+            items.append({
+                "key": k,
+                "value": v.get("value"),
+                "type": v.get("type") or "fact",
+                "confidence": v.get("confidence"),
+                "active": v.get("active", True),
+                "updated_at": v.get("updated_at"),
+            })
+        return {
+            "facts": [i for i in items if i["type"] != "preference"],
+            "preferences": [i for i in items if i["type"] == "preference"],
+        }
+
+    def toggle_profile_item(self, key: str, active: bool) -> bool:
+        """写入接口·生效/停用一条档案事实（停用后不再注入 system）。"""
+        profile = self.load_profile()
+        facts = profile.setdefault("facts", {})
+        if key not in facts:
+            return False
+        facts[key]["active"] = bool(active)
+        self.save_profile(profile)
+        return True
+
+    def delete_profile_item(self, key: str) -> bool:
+        """写入接口·删除一条档案事实（先记入 discarded 审计，不直接丢数据）。"""
+        profile = self.load_profile()
+        facts = profile.setdefault("facts", {})
+        if key not in facts:
+            return False
+        discarded = profile.setdefault("discarded", {})
+        discarded[f"deleted_{key}"] = {**facts[key],
+                                       "deleted_at": datetime.now().isoformat(timespec="seconds")}
+        del facts[key]
+        self.save_profile(profile)
+        return True
+
+    def add_profile_item(self, key: str, value, fact_type: str = "fact",
+                         confidence: float = 0.9) -> tuple:
+        """写入接口·新增一条自定义事实/偏好（成功返回 (True, "")）。"""
+        key = (key or "").strip()
+        value = str(value or "").strip()
+        if not key or not value:
+            return False, "key 和 value 都不能为空"
+        if fact_type not in ("fact", "preference"):
+            fact_type = "fact"
+        try:
+            conf = float(confidence)
+        except (TypeError, ValueError):
+            conf = 0.9
+        self.update_profile([{
+            "key": key, "value": value, "confidence": conf,
+            "type": fact_type, "active": True,
+        }])
+        return True, ""
 
     def search_profile(self, keyword: str) -> dict:
         """检索接口·档案卡：按关键词在 key/value 上做子串匹配，返回命中事实。"""
@@ -155,16 +252,46 @@ class MemoryStore:
         with open(self._session_path("current"), "w", encoding="utf-8") as f:
             json.dump(sanitize(messages), f, ensure_ascii=False, indent=2)
 
+    @staticmethod
+    def _content_hash(messages: list) -> str:
+        """会话内容指纹：用于归档去重（仅内容完全一致时判重）。"""
+        return hashlib.md5(
+            json.dumps(messages, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+    def _find_duplicate_archive(self, content_hash: str) -> str:
+        """在最近 N 份归档里找内容指纹相同的文件，返回其 session_id（无则空串）。"""
+        if not os.path.isdir(self.sessions_dir):
+            return ""
+        files = [f for f in os.listdir(self.sessions_dir)
+                 if f.endswith(".json") and f != "current.json"]
+        # 按 mtime 从新到旧取前 6 份比对即可（避免全量扫描）
+        files.sort(key=lambda f: os.path.getmtime(os.path.join(self.sessions_dir, f)), reverse=True)
+        for f in files[:6]:
+            try:
+                with open(os.path.join(self.sessions_dir, f), encoding="utf-8") as fh:
+                    msgs = json.load(fh)
+            except Exception:
+                continue
+            if self._content_hash(msgs) == content_hash:
+                return f[:-5]
+        return ""
+
     def save_session(self, messages: list, session_id: str = None) -> str:
         """
         写入接口·会话结束完整保存：更新 current.json + 写一份带时间戳归档
         （归档供后续检索/摘要使用）。返回本次会话的 session_id。
+        归档去重：若内容与最近归档完全一致，则不重复落盘（返回已有归档 id）。
         """
         self.autosave(messages)
+        clean = sanitize(messages)
+        dup = self._find_duplicate_archive(self._content_hash(clean))
+        if dup:
+            return dup
         if session_id is None:
             session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         with open(self._session_path(session_id), "w", encoding="utf-8") as f:
-            json.dump(sanitize(messages), f, ensure_ascii=False, indent=2)
+            json.dump(clean, f, ensure_ascii=False, indent=2)
         return session_id
 
     def load_session(self, session_id: str) -> list:
@@ -208,8 +335,10 @@ class MemoryStore:
                 for m in msgs
                 if kw in str(m.get("content", '')).lower()
             ]
+            # 跨会话去重：相同命中文本只保留一次，避免重复刷屏
+            lines = list(dict.fromkeys(lines))[:5]
             if lines:
-                hits.append({"session_id": meta["session_id"], "matches": lines[:5]})
+                hits.append({"session_id": meta["session_id"], "matches": lines})
         return hits
 
     # ===================== STM：短期窗口 =====================

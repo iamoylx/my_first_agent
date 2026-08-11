@@ -46,3 +46,19 @@ _trash/
 # ===== 桌宠阶段遗留素材（终端版不加载，保留备用，不进仓库） =====
 素材/
 
+# ===== Tauri 桌面客户端构建产物（不进仓库） =====
+desktop-client/src-tauri/target/
+desktop-client/node_modules/
+desktop-client/dist/
+
+# ===== 根目录构建产物（发行用，不入库）=====
+/agent-desktop.exe
+/WebView2Loader.dll
+/agent-idle.ico
+
+# ===== 桌宠构建垃圾 / 截图 / 日志（不入库）=====
+desktop-client/_target_fresh/
+desktop-client/_shot.png
+desktop-client/*.log
+desktop-client/boot.txt
+desktop-client/webview2_diag.txt
