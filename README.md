@@ -3,6 +3,8 @@
 基于 DeepSeek Function Calling 的对话 Agent，重点练习「工具调用」与「记忆系统」。练手性质，架构以简单 / 可理解 / 低成本为先。长期记忆以结构化档案卡（JSON）为主，生产级才上向量库 + RAG。
 
 > **记忆机制与数据彻底分离**：`memory/` 是纯机制代码（硬板接口），`memory_data/` 是纯本地记忆数据（硬盘），二者互不混杂。
+>
+> **进化路线见 `plan.md`**：阶段0「思考过程可视化」（可折叠灰色思考轨迹，当前实现中）→ 阶段A（主动触发 / 生活 skill / 本地模型）→ 阶段B（MCP / 健康数据）→ 阶段C（微信 / 常驻化，待决策）。
 
 ---
 
@@ -20,6 +22,7 @@
 ```
 用户输入 → process_turn → detect_tool_call(DeepSeek) → [DSML 防御] → 工具循环(tool_map)
         → stream_final(DeepSeek) → 缓冲 + prune + autosave → 退出时 finalize(归档 + 离线抽取档案卡)
+        └─ on_thinking 轨迹（记忆/工具/防御/生成）→ /chat 返回 thinking → 前端「💭 思考过程」折叠块
 
 > **模型层基于 LangChain**：`core/agent_core.py` 用 `langchain_openai.ChatOpenAI`（DeepSeek 走 OpenAI 兼容端点）+ `bind_tools` 检测工具调用 + `astream` 流式输出，消息统一走 `langchain_core.messages`。保留自定义工程逻辑：DSML 防御、`mem` 注入、工具循环上限、增量抽取缓冲 / prune / autosave / finalize。
 ```
@@ -59,6 +62,7 @@ skills/                       # 技能（自包含，注册即生效，主循环
 ├─ code_tools/                #   读文件/列目录/搜文件/搜内容/跑命令（含危险指令拦截）
 └─ web_search/                #   联网搜索（Tavily，URL 写死防 SSRF）
 tests/                        # 单元测试（不进仓库；用 temp 目录隔离，不污染真实记忆）
+logs/                         # ★思考过程黑匣子（thinking-YYYYMMDD.jsonl，运行时产物，不进仓库）
 素材/                          # 桌宠阶段遗留立绘（终端版不加载，保留备用，不进仓库）
 desktop-client/               # Tauri v2 桌面客户端（双窗口：主窗口 + 桌宠）
 ├─ agent-server.py            #   aiohttp 本地后端（:18789），桥接 core
@@ -124,7 +128,7 @@ npx tauri build             # 在 src-tauri/target/release 产出 agent-desktop.
 对前端只暴露：
 
 - `build_initial_messages(mem) -> (messages, system_msg)`
-- `process_turn(*, messages, user_text, mem, tools, tool_map, api_key, on_token=None) -> messages`
+- `process_turn(*, messages, user_text, mem, tools, tool_map, api_key, on_token=None, on_thinking=None) -> messages`（`on_thinking(ev)` 每步思考轨迹触发：记忆/工具/防御/生成）
 - `finalize(messages, mem, api_key) -> changed`（保存会话 + 离线抽取档案卡）
 - `detect_tool_call` / `stream_final`（DSML 防御在内部）
 
@@ -151,8 +155,8 @@ npx tauri build             # 在 src-tauri/target/release 产出 agent-desktop.
 | 路由 | 方法 | 作用 |
 |------|------|------|
 | `/health` | GET | 健康检查 |
-| `/chat` | POST | 非流式回复 `{reply, history_len}` |
-| `/chat/stream` | POST | SSE 流式 |
+| `/chat` | POST | 非流式回复 `{reply, history_len, thinking}`（thinking=思考轨迹数组） |
+| `/chat/stream` | POST | SSE 流式（`{"token"}` 正文 + `{"type":"thinking"}` 轨迹事件） |
 | `/history` | GET | 当前会话历史 |
 | `/reset` | POST | 重置会话 |
 | `/profile` | GET | 档案卡摘要（只读） |
@@ -205,6 +209,7 @@ Rust 侧 Tauri Commands（前端 `invoke` 名）：`start_python_server` / `stop
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
+| 0 | 思考过程可视化（Thinking Trace：后端轨迹 + 前端折叠灰字 + 日志落盘） | 计划中 |
 | 1 | STM：token 滑动窗口 `prune()` | 已完成 |
 | 2 | LTM 结构化档案卡 + 离线抽取 | 已完成 |
 | 3 | MTM 跨重启续聊 | 已完成 |
