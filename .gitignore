@@ -69,3 +69,7 @@ logs/
 
 # ===== 提醒任务数据（本地运行时数据，不进仓库）=====
 task_data/
+
+# ===== 测试缓存 / 自动生成 =====
+.pytest_cache/
+desktop-client/src-tauri/gen/

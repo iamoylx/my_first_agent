@@ -163,10 +163,14 @@ npx tauri build             # 在 src-tauri/target/release 产出 agent-desktop.
 | `/chat/stream` | POST | SSE 流式（`{"token"}` 正文 + `{"type":"thinking"}` 轨迹事件） |
 | `/history` | GET | 当前会话历史 |
 | `/reset` | POST | 重置会话 |
-| `/profile` | GET | 档案卡摘要（只读） |
+| `/profile/items` | GET | 档案卡 5 板块分组（v3） |
+| `/profile/toggle` | POST | 生效/停用一条档案项 |
+| `/profile/update` | POST | 编辑一条档案项（内容/板块/置信度） |
+| `/profile/delete` | POST | 删除一条档案项（先记 discarded 审计） |
+| `/profile/add` | POST | 新增一条档案项（自动分类 + key 规范化） |
 | `/assets/{path}` | GET | 素材代理（`PROJECT_ROOT/素材/`） |
 
-Rust 侧 Tauri Commands（前端 `invoke` 名）：`start_python_server` / `stop_python_server` / `check_server_health` / `send_chat` / `get_history` / `reset_chat_session` / `switch_to_pet_mode` / `switch_to_main_window` / `show_pet` / `hide_pet` / `set_pet_position` / `get_app_info` / `exit_app` / `mark_boot`。
+Rust 侧 Tauri Commands（前端 `invoke` 名）：`start_python_server` / `stop_python_server` / `check_server_health` / `send_chat`（可带 `image_base64`） / `get_history` / `reset_chat_session` / `get_profile_items` / `profile_add` / `profile_update` / `profile_toggle` / `profile_delete` / `set_pet_state` / `switch_to_pet_mode` / `switch_to_main_window` / `show_pet` / `hide_pet` / `set_pet_position` / `get_app_info` / `exit_app` / `mark_boot`。
 
 ### 4.6 必要路径一览
 
@@ -205,7 +209,9 @@ Rust 侧 Tauri Commands（前端 `invoke` 名）：`start_python_server` / `stop
 
 ## 七、本地记忆保护约定（★铁律）
 
-记忆数据（`memory_data/`）绝不许丢失或污染。任何改动前先 `cp -r memory_data memory_data.bak.<时间戳>`，改完 md5 对比。测试一律用 `base_dir=tempfile` 隔离，**严禁**针对真实用户记忆跑训练 / 测试。
+记忆数据（`memory_data/`）绝不许丢失或污染。任何改动前先备份，改完 md5 对比。测试一律用 `base_dir=tempfile` 隔离，**严禁**针对真实用户记忆跑训练 / 测试。
+
+> **历史备份归档**：历次记忆备份与旧版测试已移出项目，统一存放在 `D:\document\AGENT_archives\`（需要时取回；项目目录保持干净）。
 
 ---
 
