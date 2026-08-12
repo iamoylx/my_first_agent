@@ -17,7 +17,7 @@
 
 1. 确认本机 Node ≥ 22（本项目已用 v24 验证）。
 2. 双击 `login.bat` → 终端打印二维码 → 用**微信扫一扫**扫码 → 手机上确认。
-3. 双击 `start.bat` → 后台启动桥（日志在 `../logs/wechat-bridge.log`、`wechat-bridge.out.log`、`wechat-bridge.err.log`）。
+3. 双击 `start.bat` → 后台启动桥（日志在 `../logs/wechat-bridge.log`、`wechat-bridge.out.log`、`wechat-bridge.err.log`）。启动后自检端口 18888；`check.bat` 可随时查看桥是否在线。
 4. 在微信里给小满发消息即可。**主动触发推送需要你先给 bot 发过至少一条消息**（SDK 的 context_token 机制，约 24h 有效）。
 
 > 命令行方式：`node index.js login` / `node index.js start` / `node index.js logout`

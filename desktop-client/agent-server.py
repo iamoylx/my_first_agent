@@ -681,6 +681,29 @@ async def profile_update_handler(request):
     return web.json_response({"ok": True, "key": key})
 
 
+async def wechat_carrier_handler(request):
+    """POST /carriers/wechat — 运行时注册微信推送 carrier（微信桥启动时调用）。
+
+    桥复用桌面端已运行的后端时，启动时后端环境里可能没有 WECHAT_PUSH_URL，
+    通过本接口把推送端点注册进主动触发调度器，幂等（重复调用只注册一次）。
+    Body: {"push_url": "http://127.0.0.1:18888/push", "token": "..."}
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    push_url = str(data.get("push_url") or "").strip()
+    token = str(data.get("token") or "")
+    if not push_url:
+        return web.json_response({"error": "push_url required"}, status=400)
+    for c in active_scheduler._carriers:
+        if getattr(c, "name", "") == "wechat":
+            return web.json_response({"ok": True, "already": True})
+    active_scheduler.register_carrier(active.WeChatCarrier(push_url, token=token))
+    print(f"[Agent Server] 运行时注册微信推送 carrier: {push_url}")
+    return web.json_response({"ok": True})
+
+
 async def assets_proxy(request):
     """GET /assets/<path> — 代理素材文件，解决跨域和路径问题。
     
@@ -842,6 +865,7 @@ def create_app():
 
     # 素材静态代理
     app.router.add_get("/assets/{path:.*}", assets_proxy)
+    app.router.add_post("/carriers/wechat", wechat_carrier_handler)
     # CORS
     app.router.add_options("/{path:.*}", cors_options)
     return app

@@ -49,7 +49,40 @@ if (cmd === "login") {
   log("🚀 微信 bot 已启动，等待消息…（在微信里给小满发消息即可）");
 
   // 3) 主动触发推送服务（后端 WeChatCarrier → 微信）
-  startPushServer({ bot, log });
+  const pushPort = Number(process.env.WECHAT_PUSH_PORT || "18888");
+  const pushToken = process.env.WECHAT_PUSH_TOKEN || "xiaoman";
+  startPushServer({ bot, log, port: pushPort, token: pushToken });
+
+  // 3.5) 运行时注册：让后端主动触发能推到微信（幂等；复用桌面后端时也生效）
+  //     旧版后端没有该接口 → 每 3 分钟重试一次，直到用户下次重启桌面后端后自动接通
+  const registerCarrier = async () => {
+    try {
+      const res = await fetch(`http://127.0.0.1:${process.env.AGENT_PORT || "18789"}/carriers/wechat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          push_url: `http://127.0.0.1:${pushPort}/push`,
+          token: pushToken,
+        }),
+      });
+      if (res.ok) {
+        log("[push] 已向后端注册微信推送 carrier");
+        return true;
+      }
+      log(`[push] 注册 carrier 暂未成功（HTTP ${res.status}），3 分钟后重试`);
+      return false;
+    } catch (e) {
+      log(`[push] 注册 carrier 暂未成功（${e.message}），3 分钟后重试`);
+      return false;
+    }
+  };
+  (async () => {
+    if (await registerCarrier()) return;
+    const timer = setInterval(async () => {
+      if (await registerCarrier()) clearInterval(timer);
+    }, 180_000);
+    timer.unref?.();
+  })();
 
   // 4) 保持进程存活；收到退出信号时退出（后端按需保留）
   const shutdown = () => {
