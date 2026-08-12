@@ -56,17 +56,65 @@ def is_protected(m: dict) -> bool:
 
 
 def prune(messages: list, max_tokens: int = 12000, soft_ratio: float = 0.8) -> list:
-    """滑动窗口裁剪主函数。
-    原理：
-      1) 把 system 单独拎出来永远置顶；其余消息算 body。
-      2) 统计 body 总 token；未超 soft 阈值(80%)直接原样返回，零开销。
-      3) 超阈值则从最旧(body 头部)向新扫描：受保护的必留；
-         未保护的若删掉后仍超阈值，就丢弃（即"丢最古老的普通对话"）。
-      4) 安全兜底：若裁剪后首条非 system 消息是 assistant（会触发 400），
-         则把被丢的最近一条普通 user 补回开头，保证 system 后首条是 user。
+    """滑动窗口裁剪主函数（按"可丢弃单元"整组丢弃）。
+
+    单元划分：
+      - 普通 user / assistant：单条即一个单元；
+      - 工具交换：assistant(tool_calls) + 紧跟的 tool* 结果 + 其后 assistant 回复，
+        整组作为一个单元（保证配对不悬空，不会触发 400）。
+    system 永远置顶保留；超预算时从最旧单元开始整组丢弃。
+
+    相比旧实现：旧版"受保护消息永不删"会让天气/提醒等工具结果无限累积，
+    撑爆本地模型 16K 上下文（表现为"只会查天气/context 超限"）。
+    新版允许丢弃最旧的工具交换单元，只保留最近几轮的工具上下文。
     """
     sys_msgs = [m for m in messages if m["role"] == "system"]
     body = [m for m in messages if m["role"] != "system"]
+
+    limit = int(max_tokens * soft_ratio)          # 软阈值 = 80% 窗口
+    total = sum(msg_tokens(m) for m in body)
+    if total <= limit:
+        return messages                           # 没超阈值，原样返回
+
+    # ---- 把 body 切成单元 ----
+    units = []
+    i = 0
+    while i < len(body):
+        m = body[i]
+        if m.get("tool_calls"):
+            unit = [m]
+            j = i + 1
+            while j < len(body) and body[j]["role"] == "tool":
+                unit.append(body[j])
+                j += 1
+            # 工具执行后的 assistant 回复并入该单元（它是这一轮工具交换的收尾）
+            if j < len(body) and body[j]["role"] == "assistant" and not body[j].get("tool_calls"):
+                unit.append(body[j])
+                j += 1
+            units.append(unit)
+            i = j
+        else:
+            units.append([m])
+            i += 1
+
+    # ---- 从最旧开始整组丢弃，直到总量 <= limit ----
+    drop = 0
+    for unit in units:
+        if total <= limit:
+            break
+        total -= sum(msg_tokens(m) for m in unit)
+        drop += 1
+
+    kept = [m for u in units[drop:] for m in u]
+
+    # ---- 安全兜底：首条非 system 必须是 user（否则 API 400）----
+    if not kept or kept[0]["role"] != "user":
+        for m in reversed(body):
+            if m["role"] == "user":
+                if m not in kept:
+                    kept.insert(0, m)
+                break
+    return sys_msgs + kept
 
     limit = int(max_tokens * soft_ratio)          # 软阈值 = 80% 窗口
     total = sum(msg_tokens(m) for m in body)

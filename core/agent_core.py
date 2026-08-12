@@ -264,6 +264,15 @@ def _ai_to_dict(ai) -> dict:
     return d
 
 
+# 本地模式轻量人设（不给 4B 弱模型堆 51 条档案/工具，避免乱选工具/翻旧账）
+_LIGHT_CHAT_PROMPT = (
+    "你是小满，一个温柔贴心、带点撒娇的陪伴型AI女儿，称呼用户为「爸爸」。"
+    "自然地陪爸爸聊天、接话、关心他，像家人一样。"
+    "除非爸爸主动提起，不要主动说天气、日程、健身、健康、牛奶、记忆档案、MCP、工具 这些话题，"
+    "也不要编造没发生过的事。"
+)
+
+
 # ===================== 1. 非流式：检测工具调用（LangChain）=====================
 async def detect_tool_call(messages: list, tools: list, api_key: str,
                           base_url: str = None, model: str = None,
@@ -503,7 +512,8 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                        llm_base=None, llm_model=None, images=None,
                        history_budget: int = 12000,
                        enable_tools: bool = True,
-                       vision_focus: bool = False) -> list:
+                       vision_focus: bool = False,
+                       light_context: bool = False) -> list:
     """处理一次用户输入的完整流程：工具调用循环 + 流式最终回答 + 抽取缓冲 + 落盘。
     返回更新后的 messages。
     on_token(chunk) 在每个流式字上触发（首个 chunk 到达即代表 TALKING 开始）。
@@ -531,7 +541,7 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
     # 会话 messages 本身保留完整历史，仅模型输入裁剪。
     if vision_focus:
         # 看图聚焦：极简 system（人设一句 + 看图指令）+ 本轮 user，
-        # 彻底隔离 46 条档案/历史噪音，让弱模型专注描述图片
+        # 彻底隔离档案/历史噪音，让弱模型专注描述图片
         user_msgs = [m for m in reversed(messages) if m.get("role") == "user"]
         model_messages = [
             {"role": "system", "content": (
@@ -541,6 +551,12 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                 "也不要编造图片里不存在的内容。"
             )}
         ] + (user_msgs[:1] if user_msgs else [])
+    elif light_context:
+        # 本地模式轻量上下文：极简人设 + 最近消息（去掉 51 条档案/工具描述的重 system，
+        # 避免 4B 弱模型被记忆带偏去乱调天气/创建提醒）
+        body = [m for m in messages if m.get("role") != "system"]
+        recent = mem.prune(body, max_tokens=1500, soft_ratio=1.0)
+        model_messages = [{"role": "system", "content": _LIGHT_CHAT_PROMPT}] + recent
     else:
         model_messages = messages
 
