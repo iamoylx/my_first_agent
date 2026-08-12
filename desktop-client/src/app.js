@@ -150,6 +150,22 @@ async function startLocalModel() {
     }
 }
 
+/** 确保本地视觉模型就绪（发图必需：DeepSeek 无视觉，图片走本地 qwen3-vl）。
+ * 已就绪时秒回；未就绪时自动启动 Ollama+模型并预热（首次约 20-40s）。 */
+async function ensureLocalReady() {
+    const invoke = getInvoke();
+    if (!invoke) { appendMessage('[错误] Tauri API 未注入', 'system'); return false; }
+    try {
+        const data = await invoke('local_start');
+        if (data && data.ok) return true;
+        appendMessage(`[错误] ${data && data.error ? data.error : '本地视觉模型启动失败'}`, 'system');
+        return false;
+    } catch (err) {
+        appendMessage(`[错误] 本地视觉模型启动失败：${err}`, 'system');
+        return false;
+    }
+}
+
 /** 启动连通性检测（DeepSeek 可达 / Ollama / 本地模型就绪） */
 async function refreshConnectivity() {
     const invoke = getInvoke();
@@ -411,8 +427,21 @@ async function sendMessage() {
     try {
         const invoke = getInvoke();
         if (!invoke) { appendMessage('[错误] Tauri API 未注入', 'system'); return; }
+        // DeepSeek 模式发图：图片必须走本地视觉模型（DeepSeek 无视觉），
+        // 自动确保本地模型就绪，无需手动切到本地模式
+        const hasImage = !!(pendingAttachment && pendingAttachment.dataUrl);
+        if (hasImage && currentProvider !== 'local') {
+            appendMessage('图片由本地视觉模型识别，正在准备本地模型…', 'system');
+            scrollToBottom();
+            const ready = await ensureLocalReady();
+            if (!ready) {
+                setReplyingState(false);
+                notifyPetState('idle');
+                return;   // 保留附件，用户可重试或切本地
+            }
+        }
         const invokeArgs = { message: text || '看看这张图片', provider: currentProvider };
-        if (pendingAttachment && pendingAttachment.dataUrl) {
+        if (hasImage) {
             invokeArgs.image_base64 = pendingAttachment.dataUrl;
         }
         const data = await invoke('send_chat', invokeArgs);
