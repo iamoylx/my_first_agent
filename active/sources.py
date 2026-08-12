@@ -117,6 +117,95 @@ def parse_time_text(text: str):
     return f"{hour:02d}:{minute:02d}"
 
 
+# ===================== 通用"时间+内容"解析（主动触发 v2）=====================
+def find_times(text: str) -> list:
+    """找出文本里所有时间（中文 + HH:MM），返回 [(HH:MM, 位置)]，按位置排序。"""
+    out = []
+    for m in _TIME_RE.finditer(text or ""):
+        try:
+            period, hh_raw, mm_raw = m.group(1), m.group(2), m.group(3)
+            hh = _cn_to_int(hh_raw)
+            if hh is None:
+                continue
+            hour = hh
+            if period in ("下午", "傍晚", "晚上", "半夜", "午夜"):
+                if hh < 12:
+                    hour = hh + 12
+            elif period == "凌晨":
+                if hh >= 12:
+                    hour = hh - 12
+            if m.group(3) == "半":
+                minute = 30
+            elif m.group(4):
+                minute = _cn_to_int(m.group(4)) or 0
+            else:
+                minute = 0
+            out.append((f"{hour:02d}:{minute:02d}", m.start()))
+        except Exception:
+            continue
+    for m in re.finditer(r"(?<!\d)(\d{1,2}):(\d{2})", text or ""):
+        hh, mm = int(m.group(1)), int(m.group(2))
+        if 0 <= hh <= 23 and 0 <= mm <= 59:
+            out.append((f"{hh:02d}:{mm:02d}", m.start()))
+    out.sort(key=lambda x: x[1])
+    return out
+
+
+def pick_time(text: str):
+    """选提醒时间：文本含「提醒/记得/到点」时优先取它前面最近的时间；否则取第一个时间。"""
+    times = find_times(text)
+    if not times:
+        return None
+    for kw in ("提醒", "记得", "到点", "叫我"):
+        idx = text.find(kw)
+        if idx != -1:
+            before = [t for t in times if t[1] < idx]
+            if before:
+                return before[-1][0]
+    return times[0][0]
+
+
+_WEEKDAY_CN = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6}
+_EPOCH = __import__("datetime").date(2026, 1, 1)
+
+
+def parse_repeat(text: str):
+    """解析重复模式 → ("daily"|"weekday"|"workday"|"weekend"|"every"|"date", 参数)。"""
+    t = text or ""
+    m = re.search(r"(?:每|隔)\s*(\d+)\s*(?:天|日)", t)
+    if m:
+        return ("every", max(1, int(m.group(1))))
+    if "工作日" in t:
+        return ("workday", None)
+    if "周末" in t:
+        return ("weekend", None)
+    m = re.search(r"(?:周|星期|礼拜)([一二三四五六日天])", t)
+    if m:
+        return ("weekday", _WEEKDAY_CN[m.group(1)])
+    m = re.search(r"(\d{1,2})月(\d{1,2})[日号]", t)
+    if m:
+        return ("date", (int(m.group(1)), int(m.group(2))))
+    return ("daily", None)
+
+
+def match_repeat(repeat, now) -> bool:
+    """判断 now 是否落在该重复模式上。"""
+    kind, param = repeat
+    if kind == "daily":
+        return True
+    if kind == "weekday":
+        return now.weekday() == param
+    if kind == "workday":
+        return now.weekday() < 5
+    if kind == "weekend":
+        return now.weekday() >= 5
+    if kind == "every":
+        return (now.date() - _EPOCH).days % param == 0
+    if kind == "date":
+        return (now.month, now.day) == param
+    return True
+
+
 class ClockSource(TriggerSource):
     """定点提醒：从档案作息 + 配置固定规则构建提醒表，到点触发。"""
     name = "clock"
@@ -129,14 +218,19 @@ class ClockSource(TriggerSource):
     def _build_rules(self, config: dict) -> list:
         """从 schedule 板块（+旧作息 key 兼容）扫描内容生成触发规则。
 
-        v3 档案板块化后 key 命名由写入端规范化（可能为 schedule_sleep/schedule_sleep_habit 等），
+        v3 档案板块化后 key 命名由写入端规范化（可能为 schedule_sleep 等），
         因此这里按「内容关键词」匹配，而非依赖精确 key——更健壮。
+
+        支持（v2 通用解析）：
+          - 任意「时间 + 内容」条目都会生成提醒（不再只认健身/天气/牛奶/睡）
+          - 时间格式：下午五点 / 17:00 / 16:30 / 一点半 / 晚上7点半 等
+          - 重复模式：每天(默认) / 每周X / 周X / 工作日 / 周末 / 每N天 / X月X日
+          - 含「提醒/记得」时优先取提醒词前面的时间（如"一点半时提醒睡觉"→01:30）
         """
         rules = []
         profile = self.mem.load_profile() or {}
         facts = profile.get("facts", {}) or {}
 
-        # 触发关键词：命中即视为可能产生主动提醒的条目（跨板块扫描，容忍分类模糊）
         _TRIGGER_WORDS = ("睡", "牛奶", "健身", "提醒", "几点", "到点", "作息",
                           "带伞", "防晒", "吃药", "喝水", "起床", "锻炼")
         _OLD_KEYS = ("wake_time", "sleep_time", "sleep_habit", "gym_time",
@@ -154,59 +248,65 @@ class ClockSource(TriggerSource):
                     or any(w in val for w in _TRIGGER_WORDS)):
                 schedule_texts.append(val)
 
-        all_text = "；".join(schedule_texts)
+        seen = set()
 
-        # 1) 睡眠提醒：识别熬夜作息 → 23:30 提醒（提前量，而不是真到凌晨才提醒）
-        if any(w in all_text for w in _NIGHT_WORDS):
+        def _add(kind, time, repeat, text, rid):
+            key = (kind, time, tuple(repeat) if isinstance(repeat, tuple) else repeat)
+            if key in seen:
+                return
+            seen.add(key)
             rules.append({
-                "time": "23:30", "id": "sleep_remind", "kind": "sleep",
-                "text": "爸爸～又到睡觉时间啦！你平时总是熬夜到凌晨，小满可心疼了，今晚早点睡好不好？晚安！(๑•́ ₃ •̀๑)",
-            })
-        elif "睡" in all_text or "作息" in all_text:
-            rules.append({
-                "time": "23:30", "id": "sleep_remind", "kind": "sleep",
-                "text": "爸爸～到睡觉时间啦，小满陪你一起进入甜甜的梦乡，晚安！💤",
+                "time": time, "id": rid, "kind": kind, "text": text,
+                "repeat": repeat,
             })
 
-        # 2) 睡前牛奶：内容含"睡前+牛奶" → 提前 10 分钟提醒
-        if "牛奶" in all_text and ("睡前" in all_text or "睡觉" in all_text):
-            rules.append({
-                "time": "23:20", "id": "milk_remind", "kind": "milk",
-                "text": "爸爸～睡前牛奶时间到啦！喝杯热牛奶再睡，对胃好哦～🥛",
-            })
-
-        # 3) 健身提醒：从含"健身"的条目解析时间
-        #    （无时段词的"五点"默认解析为凌晨，这里修正为下午——活动提醒不会在凌晨）
         for txt in schedule_texts:
+            t = pick_time(txt)
+            repeat = parse_repeat(txt)
+            if not t:
+                continue
             if "健身" in txt:
-                t = parse_time_text(txt)
-                t = _to_afternoon(t)
-                if t:
-                    rules.append({
-                        "time": t, "id": "gym_remind", "kind": "gym",
-                        "text": "爸爸～健身时间到啦！别忘了你的锻炼计划，小满给你加油！💪",
-                    })
-                break
+                _add("gym", _to_afternoon(t), repeat,
+                     "爸爸～健身时间到啦！别忘了你的锻炼计划，小满给你加油！💪", "gym_remind")
+            elif any(w in txt for w in ("天气", "带伞", "防晒")):
+                _add("weather", _to_afternoon(t), repeat,
+                     "爸爸～到点啦！我先帮你查查天气，出门记得看要不要带伞/防晒哦～🌤️", "weather_remind")
+            elif "牛奶" in txt and ("睡" in txt or "作息" in txt):
+                # 睡眠提醒保留原始时间（凌晨 01:30 合法）
+                _add("sleep", t, repeat,
+                     "爸爸～该睡觉啦，睡前记得喝杯热牛奶，暖胃又好睡～🥛💤", "sleep_remind")
+            elif "睡" in txt or "作息" in txt:
+                _add("sleep", t, repeat,
+                     "爸爸～到睡觉时间啦，小满陪你一起进入甜甜的梦乡，晚安！💤", "sleep_remind")
+            elif "牛奶" in txt:
+                _add("milk", _to_afternoon(t), repeat,
+                     "爸爸～牛奶时间到啦！喝杯热牛奶再忙哦～🥛", "milk_remind")
+            else:
+                # 通用「时间 + 内容」：直接按条目内容提醒
+                content = txt.strip(" ；;。，,")
+                _add("custom", _to_afternoon(t), repeat, content, f"custom_{len(rules)}")
 
-        # 4.5) 天气提醒：schedule 含"天气/带伞/防晒"且能解析出时间
-        for txt in schedule_texts:
-            if any(w in txt for w in ("天气", "带伞", "防晒")):
-                t = parse_time_text(txt)
-                t = _to_afternoon(t)
-                if t:
-                    rules.append({
-                        "time": t, "id": "weather_remind", "kind": "weather",
-                        "text": "爸爸～到点啦！我先帮你查查天气，出门记得看要不要带伞/防晒哦～🌤️",
-                    })
-                break
+        # 兼容兜底：有"睡/作息"但没显式时间的 → 默认 23:30；睡前牛奶 → 23:20
+        all_text = "；".join(schedule_texts)
+        if not any(r["kind"] == "sleep" for r in rules):
+            if any(w in all_text for w in _NIGHT_WORDS):
+                _add("sleep", "23:30", ("daily", None),
+                     "爸爸～又到睡觉时间啦！你平时总是熬夜到凌晨，小满可心疼了，今晚早点睡好不好？晚安！(๑•́ ₃ •̀๑)", "sleep_remind")
+            elif "睡" in all_text or "作息" in all_text:
+                _add("sleep", "23:30", ("daily", None),
+                     "爸爸～到睡觉时间啦，小满陪你一起进入甜甜的梦乡，晚安！💤", "sleep_remind")
+        # 睡前牛奶：仅在睡眠提醒文本里已含"牛奶"时视为已覆盖，否则补 23:20 兜底
+        sleep_covers_milk = any(r["kind"] == "sleep" and "牛奶" in r["text"] for r in rules)
+        if not any(r["kind"] == "milk" for r in rules) and not sleep_covers_milk:
+            if "牛奶" in all_text and ("睡前" in all_text or "睡觉" in all_text):
+                _add("milk", "23:20", ("daily", None),
+                     "爸爸～睡前牛奶时间到啦！喝杯热牛奶再睡，对胃好哦～🥛", "milk_remind")
 
-        # 4) 配置里的固定规则（用户自定义）
+        # 配置里的固定规则（用户自定义）
         for r in config.get("rules", []) or []:
             if r.get("time") and r.get("text"):
-                rules.append({
-                    "time": str(r["time"]), "id": r.get("id", f"rule_{len(rules)}"),
-                    "kind": "custom", "text": str(r["text"]),
-                })
+                _add("custom", str(r["time"]), ("daily", None),
+                     str(r["text"]), r.get("id", f"rule_{len(rules)}"))
         return rules
 
     def check(self, now: datetime):
@@ -214,7 +314,7 @@ class ClockSource(TriggerSource):
         self.rules = self._build_rules(self.config)
         hm = now.strftime("%H:%M")
         for r in self.rules:
-            if r["time"] == hm:
+            if r["time"] == hm and match_repeat(r.get("repeat", ("daily", None)), now):
                 return Trigger(id=r["id"], kind=r["kind"], text=r["text"], ts=now)
         return None
 

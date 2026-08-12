@@ -137,6 +137,15 @@ pub async fn check_connectivity() -> Result<serde_json::Value, String> {
     }
 }
 
+/// 技能列表 → GET /skills（前端「技能」按钮自选 skill 命令 agent 执行）
+#[tauri::command]
+pub async fn get_skills() -> Result<serde_json::Value, String> {
+    match reqwest::get(server_url("/skills")).await {
+        Ok(resp) => resp.json::<serde_json::Value>().await.map_err(|e| e.to_string()),
+        Err(_) => Err("server_unreachable".to_string()),
+    }
+}
+
 /// 本地模型状态 → /local/status
 #[tauri::command]
 pub async fn local_status() -> Result<serde_json::Value, String> {

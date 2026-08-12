@@ -182,7 +182,7 @@
 | 模块 | 现状 | 关键文件 |
 |---|---|---|
 | 思考可视化（阶段0） | ✅ 完成 | `core/agent_core.py`（on_thinking/on_reasoning）、前端折叠块、`logs/thinking-*.jsonl` |
-| 主动触发（A1） | ✅ 完成 | `active/`（scheduler/sources/policy/carriers）、桌宠气泡/主窗口/企微推送、全屏免打扰 |
+| 主动触发（A1） | ✅ 完成（v2） | `active/`（scheduler/sources/policy/carriers）、桌宠气泡/主窗口/企微推送、全屏免打扰；**通用「时间+内容」+ 重复模式**（每天/周X/工作日/周末/每N天/日期） |
 | 生活 skill（A2） | ✅ 完成 | `skills/`（reminder_tools/weather/health_record） |
 | 图片附件（A2.5） | ✅ 完成 | 前端选图/粘贴 → base64 → `logs/uploads/`（多模态预留） |
 | 记忆 v3 板块化 | ✅ 完成 | `memory/`（5 板块 + 自动分类/命名/去重 + 前端折叠编辑）；迁移 `scripts/migrate_profile_v3.py` |
@@ -190,7 +190,7 @@
 | 企业微信推送 | ✅ 完成 | `active/carriers.py` WeComCarrier（`WECOM_WEBHOOK_URL`） |
 | 桌面客户端 | ✅ 可用 | Tauri 双窗口 + 桌宠 6 状态 + 记忆 UI + 附件；根目录 exe 发布 |
 | 项目结构 | ✅ 瘦身完成 | 扁平目录；备份/旧测试归档 `D:\document\AGENT_archives\`；回归 `scripts/selfcheck/` |
-| 本地模型（A3） | ✅ 完成 | Ollama（v0.32.9）+ **qwen3-vl:4b**（D 盘，~3.3GB）；客户端 DeepSeek/本地 一键切换；本地模式断网可用（原生工具+看图）；`OLLAMA_KEEP_ALIVE=10m` 闲置自动卸载 |
+| 本地模型（A3） | ✅ 完成 | Ollama（v0.32.9）+ **qwen3-vl:8b**（D 盘，~6.2GB）；DeepSeek/本地 一键切换；本地模式 8B 重开工具（文本有工具、看图视觉聚焦）；`OLLAMA_KEEP_ALIVE=10m` 闲置自动卸载 |
 | 健康数据（B2） | ⏳ 待决策 | 等手表（华为/Amazfit/小米）；`health_record` skill 已打底 |
 | 微信对话入口（C1） | ⏳ 未做 | 企微推送已有；企微"聊天入口"/服务号/个人微信未做 |
 | 后台常驻（C2）/多端（C3） | ⏳ 未做 | 常驻服务化 + 手机/Web 界面 |

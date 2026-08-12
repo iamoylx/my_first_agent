@@ -150,6 +150,7 @@ pub fn run() {
             commands::stop_python_server,
             commands::check_server_health,
             commands::check_connectivity,
+            commands::get_skills,
             commands::local_status,
             commands::local_start,
             commands::local_stop,

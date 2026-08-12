@@ -41,7 +41,12 @@ from skills.reminder_tools import TOOLS as rt_tools, TOOL_MAP as rt_map
 from skills.reminder_tools.store import TaskStore
 from skills.weather import TOOLS as w_tools, TOOL_MAP as w_map
 from skills.health_record import TOOLS as hr_tools, TOOL_MAP as hr_map
-from skills.vision import describe_image
+try:
+    # 视觉 skill（可插拔）：用户可安装更好的开源视觉 skill，只要提供
+    # async describe_image(data_url, api_key, base_url, model) -> str 即可接入
+    from skills.vision import describe_image as _vision_describe
+except Exception:
+    _vision_describe = None
 import core.agent_core as core
 import active
 from mcp_bridge import MCPManager
@@ -65,7 +70,7 @@ if not API_KEY:
 AGENT_LLM_BASE = os.getenv("AGENT_LLM_BASE", "https://api.deepseek.com/v1")
 AGENT_LLM_MODEL = os.getenv("AGENT_LLM_MODEL", "deepseek-chat")
 AGENT_LOCAL_BASE = os.getenv("AGENT_LOCAL_BASE", "http://127.0.0.1:11434/v1")
-AGENT_LOCAL_MODEL = os.getenv("AGENT_LOCAL_MODEL", "qwen3-vl:4b")
+AGENT_LOCAL_MODEL = os.getenv("AGENT_LOCAL_MODEL", "qwen3-vl:8b")
 # AGENT_LOCAL_TEXT=1：纯文本也走本地模型（工具调用会变弱，谨慎开启）
 AGENT_LOCAL_TEXT = os.getenv("AGENT_LOCAL_TEXT") == "1"
 
@@ -94,6 +99,17 @@ base_tools, base_tool_map = collect_tools((ws_tools, ws_map), (bt_tools, bt_map)
                                 (w_tools, w_map),
                                 (hr_tools, hr_map))
 tools, tool_map = base_tools, dict(base_tool_map)
+
+# 技能分组（用于前端「技能」按钮展示：自选 skill 命令 agent 执行）
+SKILL_GROUPS = [
+    ("web_search", "联网搜索", ws_tools),
+    ("basic", "基础工具", bt_tools),
+    ("code", "代码工具", ct_tools),
+    ("memory", "记忆工具", mt_tools),
+    ("reminder", "提醒任务", rt_tools),
+    ("weather", "天气", w_tools),
+    ("health", "健康记录", hr_tools),
+]
 
 # 本地模型（qwen3-vl:4b）上下文有限（16K），只注入离线可用的核心工具，
 # 避免全部工具 schema + 历史 + 图片撑爆上下文；web_search/code_tools/MCP 不注入。
@@ -387,20 +403,23 @@ async def chat_handler(request):
             pass
         # 视觉 skill：DeepSeek 模式发图 → 本地模型先把图片转成文字描述，
         # 注入用户消息后交给 DeepSeek（相当于给 DeepSeek 接上"眼睛"）
-        if provider == "deepseek" and images:
-            desc = await describe_image(images[0], API_KEY,
-                                        base_url=AGENT_LOCAL_BASE, model=AGENT_LOCAL_MODEL)
+        if provider == "deepseek" and images and _vision_describe is not None:
+            try:
+                desc = await _vision_describe(images[0], API_KEY,
+                                              base_url=AGENT_LOCAL_BASE, model=AGENT_LOCAL_MODEL)
+            except Exception:
+                desc = ""
             if desc:
                 user_text = (f"（用户发来一张图片，图片内容：{desc[:800]}）\n\n{user_text}")
                 images = None   # DeepSeek 已通过描述"看到"图片，不再走本地视觉
         llm_base, llm_model = _route_llm(bool(images), provider)
         is_local = llm_base == AGENT_LOCAL_BASE
         call_tools = _local_tools(tools) if is_local else tools
-        history_budget = 4000 if is_local else 12000
+        history_budget = 3000 if is_local else 12000
         # 本地模型看图：不绑工具（纯视觉问答），避免 4B 模型在"工具+图"下乱选工具/截断
-        enable_tools = not is_local            # 本地模式不给工具（4B 弱模型不可靠）
+        enable_tools = not (is_local and images)   # 本地文本有工具（8B 可靠）；本地看图走视觉聚焦
         vision_focus = bool(is_local and images)
-        light_context = bool(is_local)         # 本地模式轻量人设，不注入 51 条档案
+        light_context = False                   # 8B 用完整人设+记忆（不再轻量）
 
         # 收集流式 token 到缓冲区 + 思考轨迹
         tokens_buffer = []
@@ -498,19 +517,22 @@ async def chat_stream_handler(request):
             except Exception:
                 pass
             # 视觉 skill：DeepSeek 发图 → 本地模型转文字描述，交给 DeepSeek
-            if provider == "deepseek" and images:
-                desc = await describe_image(images[0], API_KEY,
-                                            base_url=AGENT_LOCAL_BASE, model=AGENT_LOCAL_MODEL)
+            if provider == "deepseek" and images and _vision_describe is not None:
+                try:
+                    desc = await _vision_describe(images[0], API_KEY,
+                                                  base_url=AGENT_LOCAL_BASE, model=AGENT_LOCAL_MODEL)
+                except Exception:
+                    desc = ""
                 if desc:
                     user_text = (f"（用户发来一张图片，图片内容：{desc[:800]}）\n\n{user_text}")
                     images = None
             llm_base, llm_model = _route_llm(bool(images), provider)
             is_local = llm_base == AGENT_LOCAL_BASE
             call_tools = _local_tools(tools) if is_local else tools
-            history_budget = 4000 if is_local else 12000
-            enable_tools = not is_local
+            history_budget = 3000 if is_local else 12000
+            enable_tools = not (is_local and images)
             vision_focus = bool(is_local and images)
-            light_context = bool(is_local)
+            light_context = False
 
             messages = await core.process_turn(
                 messages=messages,
@@ -685,6 +707,30 @@ async def assets_proxy(request):
 
 
 
+async def skills_handler(request):
+    """GET /skills — 返回全部已安装技能（按组），供前端「技能」按钮自选并命令 agent 执行。"""
+    groups = []
+    for gid, gname, gtools in SKILL_GROUPS:
+        items = [{
+            "name": t.get("function", {}).get("name") or t.get("name"),
+            "description": ((t.get("function", {}).get("description") or t.get("description") or "")[:120]),
+        } for t in gtools if t.get("function", {}).get("name") or t.get("name")]
+        if items:
+            groups.append({"id": gid, "name": gname, "tools": items})
+    # MCP 工具并入"外部服务"组
+    try:
+        mcp_tools = mcp_manager.openai_tools()
+        mcp_items = [{
+            "name": t["function"]["name"],
+            "description": (t["function"].get("description") or "")[:120],
+        } for t in mcp_tools]
+        if mcp_items:
+            groups.append({"id": "mcp", "name": "MCP 外部服务", "tools": mcp_items})
+    except Exception:
+        pass
+    return web.json_response({"groups": groups, "count": sum(len(g["tools"]) for g in groups)})
+
+
 async def mcp_tools_handler(request):
     """GET /mcp/tools — 查看已注册的 MCP 工具（调试/管理用）。"""
     try:
@@ -786,6 +832,7 @@ def create_app():
     # 主动触发 WebSocket（阶段A1）
     app.router.add_get("/ws", ws_handler)
     # MCP 工具状态（B1）
+    app.router.add_get("/skills", skills_handler)
     app.router.add_get("/mcp/tools", mcp_tools_handler)
 
     # 素材静态代理

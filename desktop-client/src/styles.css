@@ -616,6 +616,62 @@ html, body {
     color: var(--text-muted);
 }
 
+/* 技能选择器（类似 codex 的 @ 技能） */
+.skill-picker { position: relative; }
+.skill-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border: none;
+    border-radius: 10px;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    flex-shrink: 0;
+}
+.skill-btn:hover { background: var(--accent-light); color: var(--accent); }
+.skill-menu {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 0;
+    width: 300px;
+    max-height: 380px;
+    overflow-y: auto;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: 0 10px 32px rgba(0,0,0,0.14);
+    padding: 8px;
+    z-index: 1000;
+}
+.skill-menu-empty { padding: 12px; color: var(--text-muted); font-size: 12px; text-align: center; }
+.skill-group { margin-bottom: 6px; }
+.skill-group-name {
+    font-size: 11px;
+    color: var(--text-muted);
+    padding: 4px 8px 2px;
+    font-weight: 600;
+}
+.skill-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+    text-align: left;
+    padding: 6px 8px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    cursor: pointer;
+    transition: background var(--transition-fast);
+}
+.skill-item:hover { background: var(--accent-light); }
+.skill-item b { font-size: 12px; color: var(--text-primary); }
+.skill-item span { font-size: 11px; color: var(--text-muted); line-height: 1.4; }
+
 .attach-btn {
     display: flex;
     align-items: center;

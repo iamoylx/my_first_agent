@@ -193,10 +193,12 @@ Rust 侧 Tauri Commands（前端 `invoke` 名）：`start_python_server` / `stop
 
 - **必填**：`DEEPSEEK_API_KEY`（缺失启动即报错）。
 - **可选**：`TAVILY_API_KEY`（联网搜索）、`AGENT_USER_ID`（记忆隔离，默认 `default`）、`AGENT_PORT`（桌面后端端口，默认 `18789`）、`WECOM_WEBHOOK_URL`（企业微信群机器人 webhook，配置后主动消息同步推送企微）。
-- **A3 本地模型**：`AGENT_LOCAL_BASE`（默认 `http://127.0.0.1:11434/v1`）、`AGENT_LOCAL_MODEL`（默认 `qwen3-vl:4b`，需本机 Ollama 已导入该模型）。客户端聊天头部有 **DeepSeek / 本地** 切换按钮（localStorage 记忆）：
+- **A3 本地模型**：`AGENT_LOCAL_BASE`（默认 `http://127.0.0.1:11434/v1`）、`AGENT_LOCAL_MODEL`（默认 `qwen3-vl:8b`，需本机 Ollama 已导入该模型）。客户端聊天头部有 **DeepSeek / 本地** 切换按钮（localStorage 记忆）：
   - **按需启动**：每次登录后第一次选「本地」弹确认框，确认才启动 Ollama+模型（预加载）；切回 DeepSeek / 退出应用自动卸载释放显存；不选本地零占用。
   - **连通性检测**：启动自动测后端/DeepSeek/Ollama，连不上不显示「在线」。
-  - **图片（视觉 skill）**：发送前自动降采样（最大 1280px）+ 请求体上限 30MB；**DeepSeek 模式发图**会先用本地 qwen3-vl 把图片转成详细文字描述（`skills/vision`），再交给 DeepSeek 组织回复——相当于给 DeepSeek 接上"眼睛"；本地模式看图则直接走视觉聚焦。
+  - **图片**：发送前自动降采样（最大 1280px）+ 请求体上限 30MB；DeepSeek 模式发图走本地视觉转描述（视觉 skill 为可插拔接口，`skills/vision.describe_image`，装更好的开源 skill 即可自动接入）；本地模式直接看图。
+  - **技能按钮**：聊天输入框左侧⚡按钮列出全部已安装技能（联网搜索/基础/代码/记忆/提醒/天气/健康/MCP），自选后命令小满执行（类似 codex 的 @ 技能）。
+  - **主动触发 v2**：档案「主动触发」板块支持任意「时间+内容」条目（时间格式：下午五点/16:30/一点半/晚上7点半；重复模式：每天/每周X/工作日/周末/每N天/X月X日），含「提醒」时优先取提醒词前的时间（如"一点半时提醒睡觉"→01:30）。
   - **本地模式**：全部消息（含图片）走 qwen3-vl:4b，断网可用，原生工具调用 + 看图；
   - **DeepSeek 模式**：文本走 DeepSeek；仅当发图片时该轮临时走本地视觉（DeepSeek 无视觉）。
   - `AGENT_LOCAL_TEXT=1`：兼容旧逻辑，纯文本也强制走本地。

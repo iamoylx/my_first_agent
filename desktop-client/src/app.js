@@ -166,6 +166,75 @@ async function ensureLocalReady() {
     }
 }
 
+// ============ 技能选择器（类似 codex 的 @ 技能：自选 skill 命令 agent 执行）============
+let skillGroups = [];
+
+async function loadSkills() {
+    const invoke = getInvoke();
+    if (!invoke) return;
+    try {
+        const data = await invoke('get_skills');
+        if (data && Array.isArray(data.groups)) {
+            skillGroups = data.groups;
+            renderSkillMenu();
+        }
+    } catch (_) { /* 忽略，按钮无列表时不弹 */ }
+}
+
+function renderSkillMenu() {
+    const menu = document.getElementById('skill-menu');
+    if (!menu) return;
+    if (!skillGroups.length) {
+        menu.innerHTML = '<div class="skill-menu-empty">暂无技能</div>';
+        return;
+    }
+    const html = skillGroups.map(g => `
+        <div class="skill-group">
+            <div class="skill-group-name">${g.name}</div>
+            ${g.tools.map(t => `<button class="skill-item" data-name="${t.name}">
+                <b>${t.name}</b><span>${t.description || ''}</span>
+            </button>`).join('')}
+        </div>`).join('');
+    menu.innerHTML = html;
+    menu.querySelectorAll('.skill-item').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const name = btn.dataset.name;
+            insertSkillIntoInput(name);
+            hideSkillMenu();
+        });
+    });
+}
+
+function toggleSkillMenu() {
+    const menu = document.getElementById('skill-menu');
+    if (!menu) return;
+    if (menu.hidden) {
+        if (!skillGroups.length) loadSkills();
+        menu.hidden = false;
+    } else {
+        menu.hidden = true;
+    }
+}
+
+function hideSkillMenu() {
+    const menu = document.getElementById('skill-menu');
+    if (menu) menu.hidden = true;
+}
+
+/** 选中技能 → 在输入框插入命令前缀，用户补全任务后发送 */
+function insertSkillIntoInput(name) {
+    const input = document.getElementById('user-input');
+    if (!input) return;
+    const prefix = `使用「${name}」技能：`;
+    if (input.value.trim() && !input.value.includes(`「${name}」`)) {
+        input.value = prefix + input.value;
+    } else if (!input.value.trim()) {
+        input.value = prefix;
+    }
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+}
+
 /** 启动连通性检测（DeepSeek 可达 / Ollama / 本地模型就绪） */
 async function refreshConnectivity() {
     const invoke = getInvoke();
@@ -191,6 +260,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (serverConnected) {
         await refreshConnectivity();
         await loadHistory();
+        await loadSkills();
         initActivePush();
     }
 });
@@ -239,6 +309,12 @@ function scheduleActiveWSRetry() {
 // ============ 事件绑定 ============
 function bindEvents() {
     sendBtn.addEventListener('click', () => sendMessage());
+
+    const btnSkill = document.getElementById('btn-skill');
+    if (btnSkill) btnSkill.addEventListener('click', (e) => { e.stopPropagation(); toggleSkillMenu(); });
+    document.addEventListener('click', () => hideSkillMenu());
+    const skillPicker = document.getElementById('skill-picker');
+    if (skillPicker) skillPicker.addEventListener('click', (e) => e.stopPropagation());
 
     const toggle = document.getElementById('provider-toggle');
     if (toggle) {
@@ -319,8 +395,7 @@ async function waitForServer(retries = 20) {
             if (data.status === 'ok') {
                 serverConnected = true;
                 serverStatusDot.className = 'dot dot-green';
-                charStatus.textContent = '在线';
-                charStatus.style.background = '';
+                setCharStatus('在线', '');
                 loadingOverlay.classList.add('hidden');
                 console.log('[Agent] Server ready');
                 updateHeaderStatus();
@@ -333,8 +408,7 @@ async function waitForServer(retries = 20) {
     // 连不上：不显示「在线」
     serverConnected = false;
     serverStatusDot.className = 'dot dot-red';
-    charStatus.textContent = '离线';
-    charStatus.style.background = 'var(--error)';
+    setCharStatus('离线', 'var(--error)');
     updateHeaderStatus();
     loadingOverlay.querySelector('p').textContent =
         '无法连接到 Agent 服务，请检查 Python 环境';
@@ -579,8 +653,8 @@ function appendThinkingBlock(trace) {
 function setReplyingState(replying) {
     isReplying = replying;
     sendBtn.disabled = replying;
-    charStatus.textContent = replying ? '思考中...' : (serverConnected ? '在线' : '离线');
-    charStatus.style.background = replying ? '#c9a456' : (serverConnected ? 'var(--success)' : 'var(--error)');
+    setCharStatus(replying ? '思考中...' : (serverConnected ? '在线' : '离线'),
+                  replying ? '#c9a456' : (serverConnected ? 'var(--success)' : 'var(--error)'));
     // 头部状态同步（替换标题“对话”的位置）
     const headerStatus = document.getElementById('header-status');
     if (headerStatus) {
