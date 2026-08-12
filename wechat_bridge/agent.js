@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { chatBackend, resetBackendSession } from "./backend.js";
+import { chatBackend, resetBackendSession, ensureBackend } from "./backend.js";
 
 const PROVIDER = process.env.WECHAT_PROVIDER?.trim() || "deepseek"; // deepseek | local
 
@@ -72,7 +72,10 @@ export function createAgent({ log = console.log } = {}) {
         return { text: "" }; // 空回复 → SDK 不发送任何消息
       }
 
-      log(`[wechat] ← ${label} text=${text.slice(0, 40)} media=${media?.type || "无"}`);
+      // 只发图不带文字：补默认提示词（后端要求非空 message）
+      let userText = (text || "").trim();
+      if (!userText && media && media.type === "image") userText = "请描述这张图片的内容";
+      log(`[wechat] ← ${label} text=${userText.slice(0, 40)} media=${media?.type || "无"}`);
       let imageBase64 = "";
       if (media && media.type === "image") {
         try {
@@ -86,12 +89,19 @@ export function createAgent({ log = console.log } = {}) {
       const start = Date.now();
       let data;
       try {
-        data = await chatBackend({ text, imageBase64, provider: PROVIDER });
+        data = await chatBackend({ text: userText, imageBase64, provider: PROVIDER });
       } catch (e) {
-        log(`[wechat] 后端调用失败：${e.message}`);
-        return {
-          text: `爸爸，小满这边连脑子的时候出了点小问题（${String(e.message).slice(0, 80)}），你让我缓一下下再试一次好不好～`,
-        };
+        // 自愈：后端可能被桌面重启带走 → 重新拉起后端再试一次
+        log(`[wechat] 后端调用失败（${e.message}），尝试重启后端后重试…`);
+        try {
+          await ensureBackend({ log });
+          data = await chatBackend({ text: userText, imageBase64, provider: PROVIDER });
+        } catch (e2) {
+          log(`[wechat] 后端重试仍失败：${e2.message}`);
+          return {
+            text: `爸爸，小满这边连脑子的时候出了点小问题（${String(e2.message).slice(0, 80)}），你让我缓一下下再试一次好不好～`,
+          };
+        }
       }
       const reply = (data.reply || "").trim() || "（小满刚才没说出话来，再问一次好不好？）";
       log(

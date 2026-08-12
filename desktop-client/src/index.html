@@ -24,7 +24,7 @@
                      draggable="false" />
             </div>
 
-            <!-- 底部操作按钮 -->
+            <!-- 底部操作按钮（竖排 4 个：桌宠/新建对话/微信登录/微信桥） -->
             <div class="panel-actions">
                 <button class="action-btn" id="btn-pet-mode" title="最小化到桌宠模式">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -39,6 +39,16 @@
                         <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
                     </svg>
                     新建对话
+                </button>
+                <button class="action-btn" id="btn-wechat-login" title="微信扫码登录：弹出二维码窗口，手机微信扫一扫把小满加到微信">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+                    </svg>
+                    微信登录
+                </button>
+                <button class="action-btn" id="btn-wechat-bridge" title="启动/查看微信桥（小满在微信里回复你）">
+                    <span class="wx-dot" id="wx-bridge-dot"></span>
+                    <span id="wx-bridge-label">微信桥</span>
                 </button>
             </div>
         </aside>
@@ -125,7 +135,7 @@
         <div class="modal-box">
             <h3 class="modal-title">启动本地模型？</h3>
             <p class="modal-desc" id="local-modal-desc">
-                将启动本地模型 <b>qwen3-vl:4b</b>（约 3.3GB，使用中占用显存，闲置自动释放）。
+                将启动本地模型 <b>qwen3-vl:8b</b>（约 6.2GB，使用中占用显存，闲置自动释放）。
                 平时不选本地时只用 DeepSeek，节省占用；断网时可切到本地。
             </p>
             <div class="modal-actions">

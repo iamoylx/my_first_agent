@@ -598,3 +598,176 @@ fn find_python() -> Option<std::path::PathBuf> {
         None
     }
 }
+
+// ===================== 微信桥（ClawBot / iLink）=====================
+// 与 wechat_bridge/ 联动：扫码登录 / 后台启动 / 开机自启 / 状态查询。
+// 桥本体是独立 Node 进程（weixin-agent-sdk），这里只负责拉起与管理。
+
+const WX_PUSH_PORT: u16 = 18888;
+
+/// 项目根目录（AGENT/）：向上回溯，找到含 desktop-client/agent-server.py 的目录。
+fn find_project_root() -> Option<std::path::PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        let mut cur = exe.parent().map(|p| p.to_path_buf());
+        for _ in 0..6 {
+            if let Some(dir) = cur.clone() {
+                if dir.join("desktop-client").join("agent-server.py").exists()
+                    || dir.join("wechat_bridge").join("start.vbs").exists()
+                {
+                    return Some(dir);
+                }
+                cur = dir.parent().map(|p| p.to_path_buf());
+            }
+        }
+    }
+    None
+}
+
+fn tcp_port_open(port: u16) -> bool {
+    use std::net::{SocketAddr, TcpStream};
+    TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(800)).is_ok()
+}
+
+/// 微信登录态：~/.openclaw/openclaw-weixin/accounts.json 非空数组即视为已登录。
+fn wx_logged_in() -> bool {
+    let dir = std::env::var("OPENCLAW_STATE_DIR")
+        .or_else(|_| std::env::var("CLAWDBOT_STATE_DIR"))
+        .unwrap_or_else(|_| std::env::var("USERPROFILE").unwrap_or_default() + "\\.openclaw");
+    let path = std::path::Path::new(&dir).join("openclaw-weixin").join("accounts.json");
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+}
+
+// ---- 开机自启：HKCU Run 键（REG_SZ，UTF-16，中文路径无编码问题）----
+const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_VALUE: &str = "XiaomanWechatBridge";
+
+fn run_value_command() -> Option<String> {
+    let vbs = find_project_root()?.join("wechat_bridge").join("start.vbs");
+    if !vbs.exists() { return None; }
+    Some(format!("wscript.exe \"{}\"", vbs.to_string_lossy()))
+}
+
+#[cfg(target_os = "windows")]
+fn run_key_enabled() -> bool {
+    use windows_sys::Win32::System::Registry::{HKEY, RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_QUERY_VALUE};
+    unsafe {
+        let path: Vec<u16> = RUN_KEY.encode_utf16().chain(std::iter::once(0)).collect();
+        let name: Vec<u16> = RUN_VALUE.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut key: HKEY = std::ptr::null_mut();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, path.as_ptr(), 0, KEY_QUERY_VALUE, &mut key) != 0 {
+            return false;
+        }
+        let mut buf = [0u8; 2048];
+        let mut size = buf.len() as u32;
+        let ret = RegQueryValueExW(key, name.as_ptr(), std::ptr::null(), std::ptr::null_mut(), buf.as_mut_ptr(), &mut size);
+        RegCloseKey(key);
+        ret == 0
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn run_key_enabled() -> bool { false }
+
+#[cfg(target_os = "windows")]
+fn set_run_key(enabled: bool) -> bool {
+    use windows_sys::Win32::System::Registry::{
+        HKEY, RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegSetValueExW,
+        HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ,
+    };
+    let Some(cmd) = run_value_command() else { return false };
+    unsafe {
+        let path: Vec<u16> = RUN_KEY.encode_utf16().chain(std::iter::once(0)).collect();
+        let name: Vec<u16> = RUN_VALUE.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut key: HKEY = std::ptr::null_mut();
+        if RegCreateKeyExW(
+            HKEY_CURRENT_USER, path.as_ptr(), 0, std::ptr::null(), 0,
+            KEY_SET_VALUE, std::ptr::null(), &mut key, std::ptr::null_mut(),
+        ) != 0 {
+            return false;
+        }
+        let ret = if enabled {
+            let val: Vec<u16> = cmd.encode_utf16().chain(std::iter::once(0)).collect();
+            RegSetValueExW(key, name.as_ptr(), 0, REG_SZ, val.as_ptr() as *const u8, (val.len() * 2) as u32)
+        } else {
+            RegDeleteValueW(key, name.as_ptr())
+        };
+        RegCloseKey(key);
+        ret == 0
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_run_key(_enabled: bool) -> bool { false }
+
+/// 微信桥状态：桥是否在线 / 是否已登录 / 开机自启是否已绑定
+#[tauri::command]
+pub fn wechat_status() -> Result<serde_json::Value, String> {
+    let root = find_project_root().ok_or("找不到项目根目录")?;
+    Ok(serde_json::json!({
+        "bridge_running": tcp_port_open(WX_PUSH_PORT),
+        "logged_in": wx_logged_in(),
+        "startup_enabled": run_key_enabled(),
+        "push_port": WX_PUSH_PORT,
+        "bridge_dir": root.join("wechat_bridge").to_string_lossy(),
+    }))
+}
+
+/// 微信扫码登录：弹出新控制台窗口运行 login.bat（显示二维码，手机扫码确认）
+#[tauri::command]
+pub fn wechat_login() -> Result<serde_json::Value, String> {
+    let root = find_project_root().ok_or("找不到项目根目录")?;
+    let dir = root.join("wechat_bridge");
+    if !dir.join("login.bat").exists() {
+        return Err("wechat_bridge/login.bat 不存在".to_string());
+    }
+    let mut cmd = std::process::Command::new("cmd.exe");
+    cmd.arg("/c").arg("login.bat").current_dir(&dir);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x00000010); // CREATE_NEW_CONSOLE：新窗口显示二维码
+    }
+    cmd.spawn().map_err(|e| format!("启动登录窗口失败: {e}"))?;
+    Ok(serde_json::json!({"ok": true}))
+}
+
+/// 启动微信桥（隐藏后台），并绑定开机自启；等桥上线后返回状态
+#[tauri::command]
+pub fn wechat_start() -> Result<serde_json::Value, String> {
+    let root = find_project_root().ok_or("找不到项目根目录")?;
+    let vbs = root.join("wechat_bridge").join("start.vbs");
+    if !vbs.exists() {
+        return Err("wechat_bridge/start.vbs 不存在".to_string());
+    }
+    if !tcp_port_open(WX_PUSH_PORT) {
+        let mut cmd = std::process::Command::new("wscript.exe");
+        cmd.arg("//nologo").arg(&vbs);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW：完全隐藏
+        }
+        cmd.spawn().map_err(|e| format!("启动微信桥失败: {e}"))?;
+        for _ in 0..24 {
+            if tcp_port_open(WX_PUSH_PORT) { break; }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+    let running = tcp_port_open(WX_PUSH_PORT);
+    let startup = set_run_key(true); // 按需绑定开机自启（幂等）
+    Ok(serde_json::json!({
+        "ok": true,
+        "bridge_running": running,
+        "startup_enabled": startup,
+    }))
+}
+
+/// 开关微信桥开机自启（HKCU Run 键）
+#[tauri::command]
+pub fn wechat_autostart(enabled: bool) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({ "ok": true, "startup_enabled": set_run_key(enabled) }))
+}

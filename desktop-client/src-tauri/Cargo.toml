@@ -12,7 +12,7 @@ reqwest = { version = "0.12", features = ["json"] }
 
 [target.'cfg(windows)'.dependencies]
 # Job Object：把 Python 子进程绑到"关闭即杀"，保证应用无论怎么退（含被强杀）都不留残留进程
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_Security", "Win32_System_Threading"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_Security", "Win32_System_Threading", "Win32_System_Registry"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

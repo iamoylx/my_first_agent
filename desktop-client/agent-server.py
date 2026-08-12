@@ -387,7 +387,8 @@ async def chat_handler(request):
     except Exception:
         return web.json_response({"error": "invalid json"}, status=400)
 
-    if not user_text:
+    # 只发图不带文字也算有效消息（微信/桌面图片消息）；纯空请求才拒绝
+    if not user_text and not (str(data.get("image_base64") or "").strip()):
         return web.json_response({"error": "empty message"}, status=400)
 
     provider = str(data.get("provider") or "")  # "deepseek" | "local" | ""
@@ -406,6 +407,9 @@ async def chat_handler(request):
                     images = [img_b64 if img_b64.startswith("data:") else "data:image/png;base64," + img_b64]
         except Exception:
             pass
+        # 只发图没文字：补一个默认提示词，让视觉链路正常工作
+        if not user_text:
+            user_text = "请描述这张图片的内容"
         # 视觉 skill：DeepSeek 模式发图 → 本地模型先把图片转成文字描述，
         # 注入用户消息后交给 DeepSeek（相当于给 DeepSeek 接上"眼睛"）
         if provider == "deepseek" and images and _vision_describe is not None:

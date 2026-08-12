@@ -143,7 +143,7 @@ async function startLocalModel() {
         const data = await invoke('local_start');
         if (data && data.ok) {
             localApproved = true;
-            appendMessage('本地模型已启动：qwen3-vl:4b（断网可用，工具+看图）', 'system');
+            appendMessage('本地模型已启动：qwen3-vl:8b（断网可用，工具+看图）', 'system');
             scrollToBottom();
             refreshConnectivity();
             return true;
@@ -253,6 +253,93 @@ async function refreshConnectivity() {
     updateHeaderStatus();
 }
 
+// ============ 微信桥（ClawBot / iLink）============
+// 与 Rust 命令联动：扫码登录（弹二维码窗口）/ 启动桥（隐藏后台 + 绑定开机自启）/ 状态查询。
+const btnWechatLogin = document.getElementById('btn-wechat-login');
+const btnWechatBridge = document.getElementById('btn-wechat-bridge');
+const wxBridgeDot = document.getElementById('wx-bridge-dot');
+const wxBridgeLabel = document.getElementById('wx-bridge-label');
+
+async function refreshWechatStatus() {
+    const invoke = getInvoke();
+    if (!invoke) return null;
+    try {
+        const s = await invoke('wechat_status');
+        if (wxBridgeDot) {
+            wxBridgeDot.className = 'wx-dot' + (s.bridge_running ? ' on' : (s.logged_in ? ' warn' : ''));
+        }
+        if (wxBridgeLabel) {
+            if (!s.logged_in) wxBridgeLabel.textContent = '微信未登录';
+            else if (s.bridge_running) wxBridgeLabel.textContent = '微信桥在线';
+            else wxBridgeLabel.textContent = '启动微信桥';
+        }
+        if (btnWechatBridge) {
+            btnWechatBridge.title = s.bridge_running
+                ? '微信桥在线（开机自启：' + (s.startup_enabled ? '已开启' : '未开启') + '）'
+                : (s.logged_in ? '点击启动微信桥（自动绑定开机自启）' : '先点「微信登录」扫码');
+        }
+        return s;
+    } catch (e) {
+        return null;
+    }
+}
+
+async function wechatLogin() {
+    const invoke = getInvoke();
+    if (!invoke) { appendMessage('[错误] Tauri API 未注入', 'system'); return; }
+    try {
+        await invoke('wechat_login');
+        appendMessage('已弹出微信扫码登录窗口，用手机微信扫一扫并确认', 'system');
+    } catch (err) {
+        appendMessage(`[错误] 打开微信登录窗口失败：${err}`, 'system');
+    }
+}
+
+async function wechatBridgeAction() {
+    const invoke = getInvoke();
+    if (!invoke) { appendMessage('[错误] Tauri API 未注入', 'system'); return; }
+    const s = await refreshWechatStatus();
+    if (!s) { appendMessage('[错误] 查询微信桥状态失败', 'system'); return; }
+    if (!s.logged_in) {
+        appendMessage('微信还没登录，先点「微信登录」扫码', 'system');
+        return;
+    }
+    if (!s.bridge_running) {
+        appendMessage('正在启动微信桥…（首次约 5~15 秒）', 'system');
+        try {
+            const r = await invoke('wechat_start');
+            if (r && r.bridge_running) {
+                appendMessage('微信桥已上线，微信里直接和小满对话吧～（已绑定开机自启）', 'system');
+            } else {
+                appendMessage('[提示] 微信桥启动中，稍后会自动重连；可查看 logs/wechat-bridge.log', 'system');
+            }
+        } catch (err) {
+            appendMessage(`[错误] 启动微信桥失败：${err}`, 'system');
+        }
+    } else {
+        appendMessage(`微信桥在线（开机自启：${s.startup_enabled ? '已开启' : '未开启'}）`, 'system');
+    }
+    refreshWechatStatus();
+}
+
+/** 初始化：刷新状态；已登录且桥没在跑时自动拉起（开客户端 = 桥自动连上） */
+async function initWechatPanel() {
+    const s = await refreshWechatStatus();
+    if (s && s.logged_in && !s.bridge_running) {
+        try {
+            const r = await invoke('wechat_start');
+            if (r && r.bridge_running) {
+                appendMessage('微信桥已自动上线，微信里可以直接和小满说话～', 'system');
+            }
+        } catch (_) { /* 静默：用户可手动点「微信桥」 */ }
+    }
+    // 每 30 秒刷新一次状态点
+    setInterval(refreshWechatStatus, 30000);
+}
+
+if (btnWechatLogin) btnWechatLogin.addEventListener('click', wechatLogin);
+if (btnWechatBridge) btnWechatBridge.addEventListener('click', wechatBridgeAction);
+
 // ============ 初始化 ============
 document.addEventListener('DOMContentLoaded', async () => {
     // 本地模式需每次登录显式确认才启动：启动时一律回落 DeepSeek，
@@ -268,6 +355,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         await loadHistory();
         await loadSkills();
         initActivePush();
+        initWechatPanel();
     }
 });
 

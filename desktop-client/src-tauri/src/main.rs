@@ -171,6 +171,10 @@ pub fn run() {
             commands::set_pet_position,
             commands::get_app_info,
             commands::exit_app,
+            commands::wechat_status,
+            commands::wechat_login,
+            commands::wechat_start,
+            commands::wechat_autostart,
             mark_boot,
         ])
         .run(tauri::generate_context!())
