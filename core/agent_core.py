@@ -218,6 +218,9 @@ def _to_lc_messages(messages: list, images: list = None) -> list:
     for i, m in enumerate(messages):
         if m.get("role") == "user":
             last_user_idx = i
+    pending_tool_ids = set()     # 悬空 tool 消息安全网：tool 的 tool_call_id 必须匹配
+                                 # 前一条 assistant(tool_calls) 里的某个 id（布尔不够，
+                                 # 历史里可能有 ID 对不上的脏 tool 消息 → DeepSeek 400）
     for i, m in enumerate(messages):
         role = m.get("role")
         content = m.get("content") or ""
@@ -235,17 +238,31 @@ def _to_lc_messages(messages: list, images: list = None) -> list:
         elif role == "assistant":
             tc = m.get("tool_calls")
             if tc:
-                lc_tc = [{
-                    "id": t.get("id", f"call_{i}"),
-                    "name": t["function"]["name"],
-                    "args": json.loads(t["function"].get("arguments") or "{}"),
-                    "type": "function",
-                } for i, t in enumerate(tc)]
+                lc_tc = []
+                pending_tool_ids = set()
+                for ti, t in enumerate(tc):
+                    try:
+                        args = json.loads(t["function"].get("arguments") or "{}")
+                    except Exception:
+                        args = {}
+                    tid = t.get("id", f"call_{ti}")
+                    pending_tool_ids.add(tid)
+                    lc_tc.append({
+                        "id": tid,
+                        "name": t["function"]["name"],
+                        "args": args,
+                        "type": "function",
+                    })
                 out.append(AIMessage(content=content, tool_calls=lc_tc))
             else:
                 out.append(AIMessage(content=content))
+                pending_tool_ids = set()
         elif role == "tool":
-            out.append(ToolMessage(content=content, tool_call_id=m.get("tool_call_id", "")))
+            tid = m.get("tool_call_id", "")
+            if tid and tid in pending_tool_ids:
+                out.append(ToolMessage(content=content, tool_call_id=tid))
+                pending_tool_ids.discard(tid)
+            # else: 悬空/ID 不匹配的 tool 消息 → 丢弃，避免 OpenAI 400
     return out
 
 
@@ -674,11 +691,25 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
             # 避免用户看到"…的时候了："这类冒号后没内容的截断回复。
             if stripped_calls:
                 try:
+                    # 先构造伪 tool_calls（与下面 tool 消息配对，否则 OpenAI 格式 400）
+                    synthetic_calls = []
+                    tool_msgs = []
                     for call in stripped_calls[:2]:
+                        call_id = call.get("id", f"strip_{len(messages)}")
                         func_info = call.get("function") or {}
                         func_name = func_info.get("name") or ""
+                        raw_args = func_info.get("arguments") or "{}"
                         try:
-                            args = json.loads(func_info.get("arguments") or "{}")
+                            json.loads(raw_args)
+                        except Exception:
+                            raw_args = "{}"
+                        synthetic_calls.append({
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": func_name, "arguments": raw_args},
+                        })
+                        try:
+                            args = json.loads(raw_args)
                         except json.JSONDecodeError:
                             args = {}
                         func = tool_map.get(func_name)
@@ -690,30 +721,43 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                             except TypeError as e:
                                 tool_result = f"错误：参数不合法 - {e}"
                         _think("tool_result", f"{func_name} 返回：{_truncate(str(tool_result), 200)}")
-                        messages.append({
+                        tool_msgs.append({
                             "role": "tool",
-                            "tool_call_id": call.get("id", f"strip_{len(messages)}"),
+                            "tool_call_id": call_id,
                             "content": str(tool_result),
                         })
-                    _think("defense", "最终回答夹带工具调用，已执行并续写结尾")
-                    messages.append({
-                        "role": "system",
-                        "content": ("（你的上一条回复在工具调用处被截断了：请直接基于上面的工具结果，"
-                                    "用一两句话把结尾说完；不要重复已说过的内容，也不要再调用任何工具。）"),
-                    })
-                    tail = await stream_final(messages, api_key, on_token=on_token,
-                                              on_reasoning=_on_reason,
-                                              base_url=llm_base, model=llm_model)
-                    messages.pop()   # 移除临时 system，不污染历史
-                    messages[-1]["content"] = (messages[-1]["content"] or "") + tail
-                    answer = messages[-1]["content"]
+                    if synthetic_calls:
+                        # 保留工具交换记录：assistant(伪 tool_calls) + tool 结果 留在历史
+                        # （配对合法，不会 400），临时续写提示用完即删
+                        messages.append({"role": "assistant", "content": answer or "",
+                                         "tool_calls": synthetic_calls})
+                        messages.extend(tool_msgs)
+                        _think("defense", "最终回答夹带工具调用，已执行并续写结尾")
+                        messages.append({
+                            "role": "system",
+                            "content": ("（你的上一条回复在工具调用处被截断了：请直接基于上面的工具结果，"
+                                        "用一两句话把结尾说完；不要重复已说过的内容，也不要再调用任何工具。）"),
+                        })
+                        tail = await stream_final(messages, api_key, on_token=on_token,
+                                                  on_reasoning=_on_reason,
+                                                  base_url=llm_base, model=llm_model)
+                        messages.pop()   # 移除临时 system，不污染历史
+                        answer = (answer or "") + tail
+                        _assistant_appended = False   # 末尾统一 append 完整 assistant 收尾
+                    else:
+                        _assistant_appended = False
                 except Exception:
-                    pass
+                    _assistant_appended = False
+            else:
+                _assistant_appended = False
+        else:
+            _assistant_appended = False
         if final_override is not None:
             answer = final_override
         if answer is None:
             answer = ""
-        messages.append({"role": "assistant", "content": answer})
+        if not _assistant_appended:
+            messages.append({"role": "assistant", "content": answer})
 
         # ---- 增量抽取缓冲（写读分离，离线真正抽取在 finalize）----
         mem.buffer_round(user_text, answer)
