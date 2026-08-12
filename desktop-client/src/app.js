@@ -30,6 +30,12 @@ const btnPetMode = document.getElementById('btn-pet-mode');
 const btnResetChat = document.getElementById('btn-reset-chat');
 const serverStatusDot = document.getElementById('server-status');
 const charStatus = document.getElementById('char-status');
+// 立绘下方状态卡片已移除（charStatus 为 null），用安全助手更新（在线/离线/思考中在顶部 header 显示）
+function setCharStatus(text, bg) {
+    if (!charStatus) return;
+    if (text !== undefined) charStatus.textContent = text;
+    if (bg !== undefined) charStatus.style.background = bg;
+}
 const loadingOverlay = document.getElementById('loading-overlay');
 const btnAttach = document.getElementById('btn-attach');
 const fileInput = document.getElementById('file-input');
