@@ -212,13 +212,19 @@ def _to_lc_messages(messages: list, images: list = None) -> list:
     转为多模态 parts（text + image_url），供视觉模型（如 gemma3）看图。
     """
     out = []
-    for m in messages:
+    # 图片只挂到「最后一条 user 消息」（本轮提问），不污染历史里的旧提问：
+    # 否则图片会被附加到每一条历史 user 消息上，token 膨胀且模型困惑
+    last_user_idx = None
+    for i, m in enumerate(messages):
+        if m.get("role") == "user":
+            last_user_idx = i
+    for i, m in enumerate(messages):
         role = m.get("role")
         content = m.get("content") or ""
         if role == "system":
             out.append(SystemMessage(content=content))
         elif role == "user":
-            if images:
+            if images and i == last_user_idx:
                 # 多模态：text + 图片 parts（图片只喂本轮 LLM，不入历史）
                 parts = [{"type": "text", "text": content}]
                 for uri in images:
@@ -401,7 +407,7 @@ def _build_system_content(mem: MemoryStore, now: datetime = None) -> str:
                  f"{now.hour:02d}:{now.minute:02d}（{WEEKDAYS[now.weekday()]}）")
     persona = _build_persona(profile)
     system_content = persona
-    system_content += ("\n\n你可以调用工具：查询时间、计算、联网搜索、查看项目代码、读写长期记忆、创建提醒任务。"
+    system_content += ("\n\n你可以调用工具来完成任务（时间/计算/搜索/读写记忆/提醒/天气/健康等），根据用户需求选择最合适的工具。"
                        "用户明确要求「记住 / 记下来 / 写进记忆 / 存档」时，直接用 write_memory 工具，不要翻代码。"
                        "用户说「提醒我 / 到点叫我 / 记得提醒 / 明天下午三点提醒我开会」这类话时，"
                        "用 create_reminder 工具创建提醒任务（when 按当前时间推算绝对时间）。"
@@ -495,7 +501,9 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                        tools: list, tool_map: dict, api_key: str,
                        on_token=None, on_thinking=None, task_store=None,
                        llm_base=None, llm_model=None, images=None,
-                       history_budget: int = 12000) -> list:
+                       history_budget: int = 12000,
+                       enable_tools: bool = True,
+                       vision_focus: bool = False) -> list:
     """处理一次用户输入的完整流程：工具调用循环 + 流式最终回答 + 抽取缓冲 + 落盘。
     返回更新后的 messages。
     on_token(chunk) 在每个流式字上触发（首个 chunk 到达即代表 TALKING 开始）。
@@ -518,6 +526,24 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
     # 否则旧历史（上一轮 12000 预算）会把本地 16K 上下文撑爆）
     messages = mem.prune(messages, max_tokens=history_budget, soft_ratio=0.8)
 
+    # 看图聚焦模式（本地弱模型）：模型输入只保留 system + 本轮 user，
+    # 丢弃历史（含受保护的天气/工具消息），避免模型被旧上下文带偏而忽略图片。
+    # 会话 messages 本身保留完整历史，仅模型输入裁剪。
+    if vision_focus:
+        # 看图聚焦：极简 system（人设一句 + 看图指令）+ 本轮 user，
+        # 彻底隔离 46 条档案/历史噪音，让弱模型专注描述图片
+        user_msgs = [m for m in reversed(messages) if m.get("role") == "user"]
+        model_messages = [
+            {"role": "system", "content": (
+                "你是小满，一个温柔贴心的陪伴型AI女儿，称呼用户为「爸爸」。"
+                "用户发来一张图片：请直接、简洁地描述图片内容（颜色、物体、场景、人物、文字等），"
+                "用一两句话即可。不要提及天气、日程、健身、健康、记忆档案等与图片无关的话题，"
+                "也不要编造图片里不存在的内容。"
+            )}
+        ] + (user_msgs[:1] if user_msgs else [])
+    else:
+        model_messages = messages
+
     # 思考轨迹：记忆上下文注入
     try:
         profile = mem.load_profile()
@@ -534,10 +560,12 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
     answer = None   # detect 直接产出的最终回答；None 表示需要 stream_final 补生成
     try:
         # ---- 工具调用循环（带轮数上限，防止死循环 / 模型反复探索）----
+        # enable_tools=False（如本地模型看图模式）：跳过工具检测，直接流式生成，
+        # 避免弱模型在"工具+图片"场景下乱选工具 / 截断
         tool_rounds = 0
-        while True:
+        while enable_tools:
             _think("reason", "判断本轮是否需要调用工具…")
-            ai_msg = await detect_tool_call(messages, tools, api_key,
+            ai_msg = await detect_tool_call(model_messages, tools, api_key,
                                             base_url=llm_base, model=llm_model,
                                             images=images)
             content = ai_msg.get("content") or ""
@@ -621,7 +649,7 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                            c.get("function", {}).get("arguments"))
                     if key not in stripped_calls:
                         stripped_calls.append(c)
-            answer = await stream_final(messages, api_key, on_token=on_token,
+            answer = await stream_final(model_messages, api_key, on_token=on_token,
                                         on_reasoning=_on_reason,
                                         on_stripped_dsml=_on_stripped,
                                         base_url=llm_base, model=llm_model,

@@ -97,7 +97,7 @@ tools, tool_map = base_tools, dict(base_tool_map)
 # 本地模型（qwen3-vl:4b）上下文有限（16K），只注入离线可用的核心工具，
 # 避免全部工具 schema + 历史 + 图片撑爆上下文；web_search/code_tools/MCP 不注入。
 LOCAL_TOOL_NAMES = {
-    "get_current_time", "calculator",
+    "get_current_time", "calculator", "web_search",
     "write_memory", "save_important", "recall_important",
     "create_reminder", "list_reminders", "delete_reminder",
     "get_weather", "record_health", "health_records",
@@ -388,6 +388,9 @@ async def chat_handler(request):
         is_local = llm_base == AGENT_LOCAL_BASE
         call_tools = _local_tools(tools) if is_local else tools
         history_budget = 4000 if is_local else 12000
+        # 本地模型看图：不绑工具（纯视觉问答），避免 4B 模型在"工具+图"下乱选工具/截断
+        enable_tools = not (is_local and images)
+        vision_focus = bool(is_local and images)
 
         # 收集流式 token 到缓冲区 + 思考轨迹
         tokens_buffer = []
@@ -414,6 +417,8 @@ async def chat_handler(request):
                 llm_model=llm_model,
                 images=images,
                 history_budget=history_budget,
+                enable_tools=enable_tools,
+                vision_focus=vision_focus,
             )
             reply = "".join(tokens_buffer)
             _log_thinking(user_text, thinking_trace)
@@ -485,6 +490,8 @@ async def chat_stream_handler(request):
             is_local = llm_base == AGENT_LOCAL_BASE
             call_tools = _local_tools(tools) if is_local else tools
             history_budget = 4000 if is_local else 12000
+            enable_tools = not (is_local and images)
+            vision_focus = bool(is_local and images)
 
             messages = await core.process_turn(
                 messages=messages,
@@ -500,6 +507,8 @@ async def chat_stream_handler(request):
                 llm_model=llm_model,
                 images=images,
                 history_budget=history_budget,
+                enable_tools=enable_tools,
+                vision_focus=vision_focus,
             )
             _log_thinking(user_text, thinking_trace)
             await response.write(b"data: [DONE]\n\n")
