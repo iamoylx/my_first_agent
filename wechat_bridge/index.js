@@ -53,8 +53,9 @@ if (cmd === "login") {
   const pushToken = process.env.WECHAT_PUSH_TOKEN || "xiaoman";
   startPushServer({ bot, log, port: pushPort, token: pushToken });
 
-  // 3.5) 运行时注册：让后端主动触发能推到微信（幂等；复用桌面后端时也生效）
-  //     旧版后端没有该接口 → 每 3 分钟重试一次，直到用户下次重启桌面后端后自动接通
+  // 3.5) 运行时注册：让后端主动触发能推到微信（幂等；复用桌面后端时也生效）。
+  //     后端每次重启都会丢失运行时注册的 carrier → 每 5 分钟幂等重注册一次（静默自愈）。
+  let carrierRegistered = false;
   const registerCarrier = async () => {
     try {
       const res = await fetch(`http://127.0.0.1:${process.env.AGENT_PORT || "18789"}/carriers/wechat`, {
@@ -66,21 +67,24 @@ if (cmd === "login") {
         }),
       });
       if (res.ok) {
-        log("[push] 已向后端注册微信推送 carrier");
-        return true;
+        if (!carrierRegistered) log("[push] 已向后端注册微信推送 carrier");
+        carrierRegistered = true;
+      } else if (carrierRegistered) {
+        log(`[push] 推送注册失效（HTTP ${res.status}），等待后端恢复…`);
+        carrierRegistered = false;
       }
-      log(`[push] 注册 carrier 暂未成功（HTTP ${res.status}），3 分钟后重试`);
-      return false;
+      return res.ok;
     } catch (e) {
-      log(`[push] 注册 carrier 暂未成功（${e.message}），3 分钟后重试`);
+      if (carrierRegistered) {
+        log(`[push] 推送注册暂时失效（${e.message}）`);
+        carrierRegistered = false;
+      }
       return false;
     }
   };
   (async () => {
-    if (await registerCarrier()) return;
-    const timer = setInterval(async () => {
-      if (await registerCarrier()) clearInterval(timer);
-    }, 180_000);
+    await registerCarrier();
+    const timer = setInterval(registerCarrier, 300_000);
     timer.unref?.();
   })();
 

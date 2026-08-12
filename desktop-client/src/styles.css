@@ -166,6 +166,14 @@ html, body {
 .wx-dot.warn {
     background: #e67e22;
 }
+.wx-dot.warm {
+    background: #f39c12;
+    box-shadow: 0 0 6px rgba(243, 156, 18, 0.5);
+}
+.wx-dot.pink {
+    background: #e84393;
+    box-shadow: 0 0 6px rgba(232, 67, 147, 0.6);
+}
 
 .action-btn {
     display: flex;

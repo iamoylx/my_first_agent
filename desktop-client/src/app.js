@@ -340,6 +340,68 @@ async function initWechatPanel() {
 if (btnWechatLogin) btnWechatLogin.addEventListener('click', wechatLogin);
 if (btnWechatBridge) btnWechatBridge.addEventListener('click', wechatBridgeAction);
 
+// ============ 亲密模式（温馨 / 亲密 · 黏人撒娇，非露骨）============
+// 开关状态写入档案卡「行为规定」板块（rule_intimacy_level），跨会话持久；
+// 后端 _build_persona 每轮把当前模式注入系统提示（system 每次刷新）。
+const btnIntimacy = document.getElementById('btn-intimacy');
+const intimacyDot = document.getElementById('intimacy-dot');
+const intimacyLabel = document.getElementById('intimacy-label');
+const INTIMACY_KEY = 'rule_intimacy_level';
+
+function findProfileItem(items, key) {
+    for (const cat of items) {
+        const it = (cat.items || []).find(i => i.key === key);
+        if (it) return it;
+    }
+    return null;
+}
+
+async function refreshIntimacy() {
+    const invoke = getInvoke();
+    if (!invoke) return;
+    try {
+        const data = await invoke('get_profile_items');
+        const cats = (data && data.categories) || [];
+        const it = findProfileItem(cats, INTIMACY_KEY);
+        const level = (it && it.value) || 'warm';
+        if (intimacyDot) intimacyDot.className = 'wx-dot ' + (level === 'intimate' ? 'pink' : 'warm');
+        if (intimacyLabel) intimacyLabel.textContent = level === 'intimate' ? '亲密模式' : '温馨模式';
+        if (btnIntimacy) {
+            btnIntimacy.title = level === 'intimate'
+                ? '当前：亲密（黏人撒娇，非露骨）。点击切回温馨'
+                : '当前：温馨（默认）。点击切换亲密（黏人撒娇，非露骨）';
+        }
+    } catch (e) { /* 忽略 */ }
+}
+
+async function toggleIntimacy() {
+    const invoke = getInvoke();
+    if (!invoke) { appendMessage('[错误] Tauri API 未注入', 'system'); return; }
+    try {
+        const data = await invoke('get_profile_items');
+        const cats = (data && data.categories) || [];
+        const it = findProfileItem(cats, INTIMACY_KEY);
+        const cur = (it && it.value) || 'warm';
+        const next = cur === 'intimate' ? 'warm' : 'intimate';
+        if (it) {
+            await invoke('profile_update', { key: INTIMACY_KEY, value: next, category: 'rule', confidence: 1.0 });
+        } else {
+            await invoke('profile_add', { key: INTIMACY_KEY, value: next, factType: 'rule', confidence: 1.0, category: 'rule' });
+        }
+        appendMessage(
+            next === 'intimate'
+                ? '已切换到「亲密模式」：小满会更黏人、更会撒娇（温馨亲昵，不露骨）'
+                : '已切回「温馨模式」',
+            'system'
+        );
+        refreshIntimacy();
+    } catch (err) {
+        appendMessage(`[错误] 切换亲密模式失败：${err}`, 'system');
+    }
+}
+
+if (btnIntimacy) btnIntimacy.addEventListener('click', toggleIntimacy);
+
 // ============ 初始化 ============
 document.addEventListener('DOMContentLoaded', async () => {
     // 本地模式需每次登录显式确认才启动：启动时一律回落 DeepSeek，
@@ -356,6 +418,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         await loadSkills();
         initActivePush();
         initWechatPanel();
+        refreshIntimacy();
     }
 });
 
