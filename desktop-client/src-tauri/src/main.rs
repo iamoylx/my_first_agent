@@ -160,6 +160,7 @@ pub fn run() {
             commands::profile_toggle,
             commands::profile_delete,
             commands::profile_add,
+            commands::profile_update,
             commands::set_pet_state,
             commands::get_pet_state,
             commands::switch_to_pet_mode,
