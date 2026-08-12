@@ -73,3 +73,6 @@ task_data/
 # ===== 测试缓存 / 自动生成 =====
 .pytest_cache/
 desktop-client/src-tauri/gen/
+
+# ===== 微信桥 Node 依赖（不进仓库） =====
+wechat_bridge/node_modules/

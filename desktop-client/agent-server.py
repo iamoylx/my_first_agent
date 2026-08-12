@@ -160,6 +160,11 @@ wecom_url = os.getenv("WECOM_WEBHOOK_URL") or ""
 if wecom_url:
     active_scheduler.register_carrier(active.WeComCarrier(wecom_url))
     print("[Agent Server] 企业微信推送已启用（WECOM_WEBHOOK_URL）")
+wechat_push_url = os.getenv("WECHAT_PUSH_URL") or ""
+if wechat_push_url:
+    active_scheduler.register_carrier(
+        active.WeChatCarrier(wechat_push_url, token=os.getenv("WECHAT_PUSH_TOKEN", "")))
+    print("[Agent Server] 个人微信推送已启用（WECHAT_PUSH_URL）")
 
 # ============ 思考轨迹黑匣子（运行时日志，不进记忆、不进仓库）============
 LOG_DIR = PROJECT_ROOT / "logs"
@@ -842,7 +847,24 @@ def create_app():
     return app
 
 
+def _port_in_use(port: int) -> bool:
+    """探测端口是否已被其他实例占用（桌面客户端 / 微信桥）。"""
+    try:
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(1)
+            return s.connect_ex(("127.0.0.1", port)) == 0
+    except Exception:
+        return False
+
+
 if __name__ == "__main__":
+    # 端口占用守卫：已有实例在跑（桌面客户端 / 微信桥）就直接静默退出，
+    # 避免第二个实例 EADDRINUSE 崩溃刷屏。前端连的是端口，不受影响。
+    if _port_in_use(PORT):
+        print(f"[Agent Server] 端口 {PORT} 已被其他实例占用，本实例退出（复用现有后端）")
+        sys.exit(0)
+
     print(f"[Agent Server] 项目根目录: {PROJECT_ROOT}")
     print(f"[Agent Server] 素材目录: {PROJECT_ROOT / '素材'}")
     print(f"[Agent Server] 监听端口: {PORT}")

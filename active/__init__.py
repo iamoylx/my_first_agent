@@ -3,7 +3,7 @@
 
 职责边界：
   - TriggerSource（事件源）：只负责"这个契机到没到"，返回 Trigger 或 None。
-  - Carrier（载体）：只负责"把主动消息送出去"（桌宠气泡 / 主窗口 / 日志 / 未来微信）。
+  - Carrier（载体）：只负责"把主动消息送出去"（桌宠气泡 / 主窗口 / 日志 / 微信）。
   - DoNotDisturbPolicy：只负责"此刻该不该打扰"（前台全屏程序免打扰）。
   - ActiveScheduler：只协调以上三者，不关心具体实现。
 
@@ -17,6 +17,21 @@
 主动消息只经 carrier 推送与日志落盘，绝不进入会话 messages。
 """
 from .scheduler import ActiveScheduler
-from .carriers import WebSocketCarrier, LogCarrier
+from .carriers import (
+    Carrier,
+    LogCarrier,
+    WebSocketCarrier,
+    ToastCarrier,
+    WeComCarrier,
+    WeChatCarrier,
+)
 
-__all__ = ["ActiveScheduler", "WebSocketCarrier", "LogCarrier"]
+__all__ = [
+    "Carrier",
+    "ActiveScheduler",
+    "LogCarrier",
+    "WebSocketCarrier",
+    "ToastCarrier",
+    "WeComCarrier",
+    "WeChatCarrier",
+]

@@ -63,6 +63,7 @@ scripts/                      # 工具脚本 + 自检回归
 ├─ migrate_profile_v3.py      #   记忆 v2→v3 迁移
 ├─ migrate_memory_v2.py
 └─ selfcheck/                 #   回归测试（python scripts/selfcheck/test_*.py）
+wechat_bridge/                # 微信官方 ClawBot 桥接（Node，iLink 协议，带记忆对话 + 主动触发推送）
 desktop-client/               # Tauri v2 桌面客户端（主窗口 + 桌宠）
 ├─ agent-server.py            #   本地 HTTP/WS 后端（:18789），桥接 core/active/mcp
 ├─ src/                       #   前端（index.html/app.js/pet.html/pet.js/styles.css）
@@ -100,6 +101,20 @@ npx tauri build             # 在 src-tauri/target/release 产出 agent-desktop.
 
 ---
 
+## 三点五、微信接入（官方 ClawBot / iLink 协议）
+
+微信官方 ClawBot 开放后，个人微信可正式接入小满（非协议外挂通道）。协议走腾讯官方 **iLink**（`https://ilinkai.weixin.qq.com`，bot_type=3），即 OpenClaw/ACP 体系；本项目用社区桥接 SDK `weixin-agent-sdk` 直接实现 `Agent.chat()` 接口即可，无需自建 OpenClaw 网关。
+
+```
+微信消息 → SDK 长轮询(getUpdates) → agent.chat(request)
+        → 小满后端 POST /chat（同一记忆/档案/工具/主动触发全链路）→ 回复文本回微信
+图片：SDK 自动下载解密 → base64 → 后端 qwen3-vl:8b 视觉 skill（DeepSeek 模式也能"看图"）
+主动触发：后端 WeChatCarrier → POST 127.0.0.1:18888/push → bot.sendMessage() → 微信
+```
+
+- 代码在 `wechat_bridge/`（Node ≥ 22，`npm install` 已装 `weixin-agent-sdk`）。
+- 使用：双击 `wechat_bridge/login.bat` 扫码登录 → 双击 `wechat_bridge/start.bat` 后台启动 → 微信里直接和小满对话（同桌面端记忆）。
+- 详细说明 / 环境变量：见 `wechat_bridge/README.md`。
 ## 四、模块接口定义与必要路径
 
 ### 4.1 统一记忆层 `MemoryStore`（`memory/store.py`）

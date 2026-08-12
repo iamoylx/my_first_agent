@@ -1,0 +1,18 @@
+{
+  "name": "wechat-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "小满 x 微信官方 ClawBot 桥接（iLink 协议，带记忆对话 + 主动触发推送）",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node index.js start",
+    "login": "node index.js login",
+    "logout": "node index.js logout"
+  },
+  "dependencies": {
+    "weixin-agent-sdk": "^0.5.0"
+  }
+}

@@ -125,3 +125,41 @@ class WeComCarrier(Carrier):
                     pass
         except Exception:
             pass
+
+class WeChatCarrier(Carrier):
+    """个人微信推送（官方 ClawBot / iLink 桥接）。
+
+    桥接进程跑在 wechat_bridge/（weixin-agent-sdk），监听本地 HTTP 端点
+    WECHAT_PUSH_URL（默认 http://127.0.0.1:18888/push），收到主动触发消息后
+    通过 bot.sendMessage() 推送到用户个人微信。
+
+    配置：
+      WECHAT_PUSH_URL   桥接推送端点（设置后才启用）
+      WECHAT_PUSH_TOKEN 可选鉴权 token（与桥接端保持一致）
+    """
+    name = "wechat"
+
+    def __init__(self, push_url=None, token=""):
+        self.push_url = (push_url or "").strip()
+        self.token = (token or "").strip()
+        self.available = bool(self.push_url)
+
+    async def send(self, msg: dict):
+        if not self.available:
+            return
+        try:
+            import aiohttp
+            headers = {}
+            if self.token:
+                headers["X-Push-Token"] = self.token
+            payload = {
+                "text": str(msg.get("text", "")),
+                "kind": str(msg.get("kind", "")),
+                "id": str(msg.get("id", "")),
+                "ts": msg.get("ts"),
+            }
+            async with aiohttp.ClientSession() as s:
+                async with s.post(self.push_url, json=payload, headers=headers, timeout=5):
+                    pass
+        except Exception:
+            pass
