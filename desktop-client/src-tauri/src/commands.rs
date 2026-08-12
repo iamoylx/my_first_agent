@@ -128,6 +128,56 @@ pub async fn check_server_health() -> Result<serde_json::Value, String> {
     }
 }
 
+/// 启动连通性检测（DeepSeek 可达 + Ollama + 本地模型就绪）→ /health/full
+#[tauri::command]
+pub async fn check_connectivity() -> Result<serde_json::Value, String> {
+    match reqwest::get(server_url("/health/full")).await {
+        Ok(resp) => resp.json::<serde_json::Value>().await.map_err(|e| e.to_string()),
+        Err(_) => Err("server_unreachable".to_string()),
+    }
+}
+
+/// 本地模型状态 → /local/status
+#[tauri::command]
+pub async fn local_status() -> Result<serde_json::Value, String> {
+    match reqwest::get(server_url("/local/status")).await {
+        Ok(resp) => resp.json::<serde_json::Value>().await.map_err(|e| e.to_string()),
+        Err(_) => Err("server_unreachable".to_string()),
+    }
+}
+
+/// 按需启动本地模型（Ollama + 校验模型）→ POST /local/start
+#[tauri::command]
+pub async fn local_start() -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(server_url("/local/start"))
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {e}"))?;
+    if resp.status().is_success() {
+        resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+    } else {
+        Err(format!("HTTP {}", resp.status()))
+    }
+}
+
+/// 卸载本地模型（释放显存）→ POST /local/stop
+#[tauri::command]
+pub async fn local_stop() -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(server_url("/local/stop"))
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {e}"))?;
+    if resp.status().is_success() {
+        resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+    } else {
+        Err(format!("HTTP {}", resp.status()))
+    }
+}
+
 // ===================== 聊天功能 =====================
 
 #[tauri::command]
@@ -159,7 +209,14 @@ pub async fn send_chat(
     if resp.status().is_success() {
         resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
     } else {
-        Err(format!("HTTP {}", resp.status()))
+        // 非 2xx：尽量把服务端的真实错误信息透传回前端（如模型报错/请求过大）
+        let status = resp.status();
+        match resp.json::<serde_json::Value>().await {
+            Ok(v) => Err(v.get("error").and_then(|e| e.as_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| format!("HTTP {}", status))),
+            Err(_) => Err(format!("HTTP {}", status)),
+        }
     }
 }
 
@@ -371,6 +428,13 @@ async fn graceful_shutdown(app: &AppHandle) {
     let mut proc = state.python_process.lock().await;
 
     if reachable {
+        // 1.5) 退出前卸载本地模型（释放显存；finalize 里也会兜底再卸一次）
+        let _ = client
+            .post(server_url("/local/stop"))
+            .timeout(Duration::from_secs(6))
+            .send()
+            .await;
+
         // 2) 通知后端 finalize（后端并发抽取+摘要、短超时；完成后自行停止事件循环并退出）
         let _ = client
             .post(server_url("/finalize"))

@@ -67,28 +67,114 @@ function getInvoke() {
 let isReplying = false;
 // 对话大脑切换：localStorage 持久化，默认 DeepSeek
 let currentProvider = localStorage.getItem('xiaoman_provider') || 'deepseek';
+let serverConnected = false;      // Agent 后端是否连上
+let localApproved = false;        // 本会话是否已确认启动本地模型（每次登录需重新确认）
+let connectivity = null;          // {deepseek_ok, ollama_running, local_model_ready}
 
-// ============ 模型切换（DeepSeek / 本地）============
-function setProvider(p) {
+// ============ 模型切换（DeepSeek / 本地，按需启动本地模型）============
+function providerLabel(p) {
+    return p === 'local' ? '本地 Qwen3-VL' : 'DeepSeek';
+}
+
+function applyProvider(p) {
     if (p !== 'deepseek' && p !== 'local') return;
     currentProvider = p;
     localStorage.setItem('xiaoman_provider', p);
     document.querySelectorAll('#provider-toggle .provider-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.provider === p);
     });
-    const label = p === 'local' ? '本地 Qwen3-VL' : 'DeepSeek';
+    updateHeaderStatus();
+}
+
+function updateHeaderStatus() {
     const st = document.getElementById('header-status');
-    if (st) st.textContent = label;
-    appendMessage(`模型已切换：${label}${p === 'local' ? '（断网可用，看图走本地）' : '（联网，图片由本地视觉识别）'}`, 'system');
-    scrollToBottom();
+    if (!st) return;
+    if (!serverConnected) { st.textContent = '连接失败'; return; }
+    let label = providerLabel(currentProvider);
+    if (currentProvider === 'deepseek' && connectivity && connectivity.deepseek_ok === false) {
+        label += ' · 离线';
+    } else if (currentProvider === 'local' && connectivity && connectivity.local_model_ready === false) {
+        label += ' · 未就绪';
+    }
+    st.textContent = label;
+}
+
+/** 点击切换：本地首次需要确认启动；切回 DeepSeek 时顺手卸载本地模型释放显存 */
+async function setProvider(p) {
+    if (p !== 'deepseek' && p !== 'local') return;
+    if (p === currentProvider) return;
+    if (p === 'local') {
+        if (!localApproved) {
+            requestLocalApproval();
+            return;
+        }
+        const ok = await startLocalModel();
+        if (ok) applyProvider('local');
+    } else {
+        // 切回 DeepSeek：卸载本地模型（尽力而为，失败不影响切换）
+        const invoke = getInvoke();
+        if (invoke) { invoke('local_stop').catch(() => {}); }
+        applyProvider('deepseek');
+    }
+}
+
+/** 本地模型启动确认弹窗（每次登录后第一次选「本地」时弹出） */
+function requestLocalApproval() {
+    const modal = document.getElementById('local-modal');
+    if (!modal) return;
+    modal.hidden = false;
+}
+
+function hideLocalModal() {
+    const modal = document.getElementById('local-modal');
+    if (modal) modal.hidden = true;
+}
+
+async function startLocalModel() {
+    const invoke = getInvoke();
+    if (!invoke) { appendMessage('[错误] Tauri API 未注入', 'system'); return false; }
+    try {
+        const data = await invoke('local_start');
+        if (data && data.ok) {
+            localApproved = true;
+            appendMessage('本地模型已启动：qwen3-vl:4b（断网可用，工具+看图）', 'system');
+            scrollToBottom();
+            refreshConnectivity();
+            return true;
+        }
+        appendMessage(`[错误] ${data && data.error ? data.error : '本地模型启动失败'}`, 'system');
+        return false;
+    } catch (err) {
+        appendMessage(`[错误] 本地模型启动失败：${err}`, 'system');
+        return false;
+    }
+}
+
+/** 启动连通性检测（DeepSeek 可达 / Ollama / 本地模型就绪） */
+async function refreshConnectivity() {
+    const invoke = getInvoke();
+    if (!invoke) return;
+    try {
+        connectivity = await invoke('check_connectivity');
+    } catch (_) {
+        connectivity = null;
+    }
+    updateHeaderStatus();
 }
 
 // ============ 初始化 ============
 document.addEventListener('DOMContentLoaded', async () => {
     bindEvents();
     await waitForServer();
-    await loadHistory();
-    initActivePush();
+    if (serverConnected) {
+        await refreshConnectivity();
+        await loadHistory();
+        initActivePush();
+        // 上次会话停在「本地」：本次登录仍要重新确认才启动
+        if (currentProvider === 'local') {
+            requestLocalApproval();
+        }
+    }
 });
 
 // ============ 主动触发推送（阶段A1）============
@@ -145,10 +231,24 @@ function bindEvents() {
         toggle.querySelectorAll('.provider-btn').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.provider === currentProvider);
         });
-        // header 状态直接显示当前模型
-        const initLabel = currentProvider === 'local' ? '本地 Qwen3-VL' : 'DeepSeek';
-        const hst = document.getElementById('header-status');
-        if (hst) hst.textContent = initLabel;
+    }
+    // 本地模型确认弹窗按钮
+    const btnConfirm = document.getElementById('btn-local-confirm');
+    const btnCancel = document.getElementById('btn-local-cancel');
+    if (btnConfirm) {
+        btnConfirm.addEventListener('click', async () => {
+            hideLocalModal();
+            const ok = await startLocalModel();
+            if (ok) applyProvider('local');
+        });
+    }
+    if (btnCancel) {
+        btnCancel.addEventListener('click', () => {
+            hideLocalModal();
+            applyProvider('deepseek');
+            appendMessage('已取消：本次未启动本地模型，继续使用 DeepSeek', 'system');
+            scrollToBottom();
+        });
     }
 
     userInput.addEventListener('keydown', (e) => {
@@ -199,16 +299,25 @@ async function waitForServer(retries = 20) {
         try {
             const data = await invoke('check_server_health');
             if (data.status === 'ok') {
+                serverConnected = true;
                 serverStatusDot.className = 'dot dot-green';
+                charStatus.textContent = '在线';
+                charStatus.style.background = '';
                 loadingOverlay.classList.add('hidden');
                 console.log('[Agent] Server ready');
+                updateHeaderStatus();
                 return;
             }
         } catch { /* 还没起来 */ }
         serverStatusDot.className = 'dot dot-gray';
         await sleep(500);
     }
+    // 连不上：不显示「在线」
+    serverConnected = false;
     serverStatusDot.className = 'dot dot-red';
+    charStatus.textContent = '离线';
+    charStatus.style.background = 'var(--error)';
+    updateHeaderStatus();
     loadingOverlay.querySelector('p').textContent =
         '无法连接到 Agent 服务，请检查 Python 环境';
 }
@@ -221,17 +330,53 @@ function readFileAsAttachment(file) {
         appendMessage('[提示] 目前只支持选择图片文件（多模态模型就绪后开放其它附件）', 'system');
         return;
     }
-    if (file.size > 10 * 1024 * 1024) {
-        appendMessage('[提示] 图片超过 10MB，请压缩后再试', 'system');
+    if (file.size > 15 * 1024 * 1024) {
+        appendMessage('[提示] 图片超过 15MB，请压缩后再试', 'system');
         return;
     }
     const reader = new FileReader();
     reader.onload = () => {
-        pendingAttachment = { name: file.name, dataUrl: String(reader.result), mime: file.type };
-        renderAttachment();
+        const dataUrl = String(reader.result);
+        compressImage(dataUrl, file.type)
+            .then(compressed => {
+                pendingAttachment = { name: file.name, dataUrl: compressed.dataUrl, mime: compressed.mime };
+                renderAttachment();
+            })
+            .catch(() => {
+                // 压缩失败（如非标准图）则原样使用
+                pendingAttachment = { name: file.name, dataUrl, mime: file.type };
+                renderAttachment();
+            });
     };
     reader.onerror = () => appendMessage('[错误] 读取图片失败', 'system');
     reader.readAsDataURL(file);
+}
+
+/** 发送前降采样压缩图片：最大边 1280px，JPEG 0.85 / PNG 保留，减小体积与视觉 token。 */
+function compressImage(dataUrl, mime) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+            try {
+                const MAX = 1280;
+                let { width, height } = img;
+                const scale = Math.min(1, MAX / Math.max(width, height));
+                const w = Math.max(1, Math.round(width * scale));
+                const h = Math.max(1, Math.round(height * scale));
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, w, h);
+                const isPng = (mime || '').includes('png') || (mime || '').includes('webp');
+                const outMime = isPng ? 'image/png' : 'image/jpeg';
+                const outDataUrl = canvas.toDataURL(outMime, isPng ? undefined : 0.85);
+                resolve({ dataUrl: outDataUrl, mime: outMime });
+            } catch (e) { reject(e); }
+        };
+        img.onerror = reject;
+        img.src = dataUrl;
+    });
 }
 
 function renderAttachment() {
@@ -252,19 +397,19 @@ function clearAttachment() {
  */
 async function sendMessage() {
     const text = userInput.value.trim();
-    if (!text || isReplying) return;
+    if ((!text && !pendingAttachment) || isReplying) return;
 
     userInput.value = '';
     userInput.style.height = 'auto';
 
-    appendMessage(text, 'user');
+    appendMessage(text || '（图片）', 'user');
     setReplyingState(true);
     notifyPetState('press');
 
     try {
         const invoke = getInvoke();
         if (!invoke) { appendMessage('[错误] Tauri API 未注入', 'system'); return; }
-        const invokeArgs = { message: text, provider: currentProvider };
+        const invokeArgs = { message: text || '看看这张图片', provider: currentProvider };
         if (pendingAttachment && pendingAttachment.dataUrl) {
             invokeArgs.image_base64 = pendingAttachment.dataUrl;
         }
@@ -403,13 +548,13 @@ function appendThinkingBlock(trace) {
 function setReplyingState(replying) {
     isReplying = replying;
     sendBtn.disabled = replying;
-    charStatus.textContent = replying ? '思考中...' : '在线';
-    charStatus.style.background = replying ? '#c9a456' : 'var(--success)';
+    charStatus.textContent = replying ? '思考中...' : (serverConnected ? '在线' : '离线');
+    charStatus.style.background = replying ? '#c9a456' : (serverConnected ? 'var(--success)' : 'var(--error)');
     // 头部状态同步（替换标题“对话”的位置）
     const headerStatus = document.getElementById('header-status');
     if (headerStatus) {
-        headerStatus.textContent = replying ? '思考中...' : '在线';
-        headerStatus.style.background = replying ? '#c9a456' : 'var(--success)';
+        headerStatus.textContent = replying ? '思考中...' : providerLabel(currentProvider);
+        headerStatus.style.background = replying ? '#c9a456' : '';
     }
 }
 

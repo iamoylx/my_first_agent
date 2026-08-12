@@ -229,6 +229,60 @@ html, body {
     gap: 8px;
 }
 
+/* 本地模型启动确认弹窗 */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(2px);
+}
+.modal-box {
+    width: 380px;
+    max-width: 90vw;
+    background: #fff;
+    border-radius: 16px;
+    padding: 22px 24px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+}
+.modal-title {
+    margin: 0 0 10px;
+    font-size: 17px;
+    color: var(--text-primary);
+}
+.modal-desc {
+    margin: 0 0 20px;
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--text-secondary);
+}
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+.modal-btn {
+    padding: 8px 18px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    background: rgba(255, 255, 255, 0.7);
+    color: var(--text-secondary);
+}
+.modal-btn:hover { border-color: var(--accent); color: var(--text-primary); }
+.modal-confirm {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+    font-weight: 600;
+}
+.modal-confirm:hover { opacity: 0.9; color: #fff; }
+
 /* 模型切换按钮（DeepSeek / 本地） */
 .provider-toggle {
     display: inline-flex;

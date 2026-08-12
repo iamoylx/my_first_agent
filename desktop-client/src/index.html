@@ -118,6 +118,21 @@
         </main>
     </div>
 
+    <!-- 本地模型启动确认弹窗（每次登录后第一次选「本地」时弹出） -->
+    <div class="modal-overlay" id="local-modal" hidden>
+        <div class="modal-box">
+            <h3 class="modal-title">启动本地模型？</h3>
+            <p class="modal-desc" id="local-modal-desc">
+                将启动本地模型 <b>qwen3-vl:4b</b>（约 3.3GB，使用中占用显存，闲置自动释放）。
+                平时不选本地时只用 DeepSeek，节省占用；断网时可切到本地。
+            </p>
+            <div class="modal-actions">
+                <button class="modal-btn modal-cancel" id="btn-local-cancel">取消</button>
+                <button class="modal-btn modal-confirm" id="btn-local-confirm">启动</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 加载遮罩（首次连接时显示） -->
     <div class="loading-overlay" id="loading-overlay">
         <div class="loading-content">

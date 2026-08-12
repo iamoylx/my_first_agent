@@ -18,8 +18,10 @@ import base64
 import json
 import os
 import re
+import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 # ============ 把项目根目录加入 sys.path，使 import core / memory / skills 正常工作 ============
@@ -91,6 +93,21 @@ base_tools, base_tool_map = collect_tools((ws_tools, ws_map), (bt_tools, bt_map)
                                 (w_tools, w_map),
                                 (hr_tools, hr_map))
 tools, tool_map = base_tools, dict(base_tool_map)
+
+# 本地模型（qwen3-vl:4b）上下文有限（16K），只注入离线可用的核心工具，
+# 避免全部工具 schema + 历史 + 图片撑爆上下文；web_search/code_tools/MCP 不注入。
+LOCAL_TOOL_NAMES = {
+    "get_current_time", "calculator",
+    "write_memory", "save_important", "recall_important",
+    "create_reminder", "list_reminders", "delete_reminder",
+    "get_weather", "record_health", "health_records",
+}
+
+
+def _local_tools(full_tools: list) -> list:
+    """按名称过滤出本地模式可用的工具（schema 子集；tool_map 保持全量以便执行）。"""
+    return [t for t in full_tools
+            if (t.get("function", {}).get("name") or t.get("name")) in LOCAL_TOOL_NAMES]
 
 # 通用 MCP 桥（B1）：启动时连接 MCP server，动态合并工具
 mcp_manager = MCPManager(config_dir=PROJECT_ROOT / "mcp")
@@ -175,6 +192,152 @@ def _log_thinking(user_text: str, trace: list) -> None:
         pass
 
 
+# ============ 本地模型（Ollama）按需启停 ============
+def _ollama_base() -> str:
+    return AGENT_LOCAL_BASE.replace("/v1", "")
+
+
+def _ollama_running() -> bool:
+    """Ollama 服务是否可达（127.0.0.1:11434）。"""
+    try:
+        with urllib.request.urlopen(_ollama_base() + "/api/version", timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def _ollama_exe() -> str:
+    exe = os.getenv("OLLAMA_BIN")
+    if exe and os.path.exists(exe):
+        return exe
+    cand = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
+    if cand.exists():
+        return str(cand)
+    return "ollama"
+
+
+def _ollama_model_ready(model: str) -> bool:
+    """Ollama 里是否已导入该模型。"""
+    try:
+        with urllib.request.urlopen(_ollama_base() + "/api/tags", timeout=3) as r:
+            data = json.loads(r.read().decode("utf-8"))
+            names = [m.get("name", "") for m in data.get("models", [])]
+        return any(n == model or n.startswith(model + ":") for n in names)
+    except Exception:
+        return False
+
+
+def _start_ollama() -> bool:
+    """按需启动 Ollama（隐藏窗口）；已在运行则直接返回。"""
+    if _ollama_running():
+        return True
+    try:
+        subprocess.Popen([_ollama_exe(), "serve"],
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        return False
+    for _ in range(30):  # 最多等 15s
+        if _ollama_running():
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _unload_local(model: str = None) -> bool:
+    """卸载本地模型（keep_alive=0），释放显存；不杀 Ollama 进程。"""
+    model = model or AGENT_LOCAL_MODEL
+    try:
+        req = urllib.request.Request(
+            _ollama_base() + "/api/generate",
+            data=json.dumps({"model": model, "keep_alive": 0}).encode("utf-8"),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def _warm_local(model: str = None) -> bool:
+    """预加载本地模型（发一个 1 token 的热身请求），让首条消息不用等冷启动。"""
+    model = model or AGENT_LOCAL_MODEL
+    try:
+        req = urllib.request.Request(
+            _ollama_base() + "/api/chat",
+            data=json.dumps({
+                "model": model,
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": False,
+                "options": {"num_predict": 1},
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def _deepseek_ping() -> bool:
+    """轻量探测 DeepSeek API 连通性（max_tokens=1，5s 超时）。"""
+    key = API_KEY or os.getenv("DEEPSEEK_API_KEY")
+    if not key:
+        return False
+    try:
+        req = urllib.request.Request(
+            AGENT_LLM_BASE + "/chat/completions",
+            data=json.dumps({
+                "model": AGENT_LLM_MODEL,
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 1,
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": "Bearer " + key})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+async def local_status_handler(request):
+    """GET /local/status — 本地模型状态（Ollama 是否运行 + 模型是否就绪）。"""
+    ollama = _ollama_running()
+    return web.json_response({
+        "ollama_running": ollama,
+        "model_ready": ollama and _ollama_model_ready(AGENT_LOCAL_MODEL),
+        "model": AGENT_LOCAL_MODEL,
+    })
+
+
+async def local_start_handler(request):
+    """POST /local/start — 按需启动 Ollama + 校验本地模型就绪。"""
+    ok = await asyncio.to_thread(_start_ollama)
+    if not ok:
+        return web.json_response({"ok": False, "error": "Ollama 启动失败，请手动打开 Ollama"}, status=500)
+    if not _ollama_model_ready(AGENT_LOCAL_MODEL):
+        return web.json_response({"ok": False, "error": "本地模型 " + AGENT_LOCAL_MODEL + " 未安装，请先导入"}, status=500)
+    # 预热：立即把模型加载进显存（约 20-40s），首条消息不再等冷启动
+    await asyncio.to_thread(_warm_local)
+    return web.json_response({"ok": True, "model": AGENT_LOCAL_MODEL})
+
+
+async def local_stop_handler(request):
+    """POST /local/stop — 卸载本地模型（释放显存），不杀 Ollama。"""
+    ok = await asyncio.to_thread(_unload_local)
+    return web.json_response({"ok": True, "unloaded": ok})
+
+
+async def health_full_handler(request):
+    """GET /health/full — 启动连通性检测：DeepSeek 可达 + Ollama + 本地模型就绪。"""
+    deepseek = await asyncio.to_thread(_deepseek_ping)
+    ollama = _ollama_running()
+    return web.json_response({
+        "status": "ok",
+        "deepseek_ok": deepseek,
+        "ollama_running": ollama,
+        "local_model_ready": ollama and _ollama_model_ready(AGENT_LOCAL_MODEL),
+        "local_model": AGENT_LOCAL_MODEL,
+    })
+
+
 async def init_session():
     """构建初始会话（恢复历史 + 注入档案）。"""
     global messages, system_msg
@@ -222,6 +385,9 @@ async def chat_handler(request):
         except Exception:
             pass
         llm_base, llm_model = _route_llm(bool(images), provider)
+        is_local = llm_base == AGENT_LOCAL_BASE
+        call_tools = _local_tools(tools) if is_local else tools
+        history_budget = 4000 if is_local else 12000
 
         # 收集流式 token 到缓冲区 + 思考轨迹
         tokens_buffer = []
@@ -238,7 +404,7 @@ async def chat_handler(request):
                 messages=messages,
                 user_text=user_text,
                 mem=mem,
-                tools=tools,
+                tools=call_tools,
                 tool_map=tool_map,
                 api_key=API_KEY,
                 on_token=on_token,
@@ -247,6 +413,7 @@ async def chat_handler(request):
                 llm_base=llm_base,
                 llm_model=llm_model,
                 images=images,
+                history_budget=history_budget,
             )
             reply = "".join(tokens_buffer)
             _log_thinking(user_text, thinking_trace)
@@ -315,12 +482,15 @@ async def chat_stream_handler(request):
             except Exception:
                 pass
             llm_base, llm_model = _route_llm(bool(images), provider)
+            is_local = llm_base == AGENT_LOCAL_BASE
+            call_tools = _local_tools(tools) if is_local else tools
+            history_budget = 4000 if is_local else 12000
 
             messages = await core.process_turn(
                 messages=messages,
                 user_text=user_text,
                 mem=mem,
-                tools=tools,
+                tools=call_tools,
                 tool_map=tool_map,
                 api_key=API_KEY,
                 on_token=sse_send,
@@ -329,6 +499,7 @@ async def chat_stream_handler(request):
                 llm_base=llm_base,
                 llm_model=llm_model,
                 images=images,
+                history_budget=history_budget,
             )
             _log_thinking(user_text, thinking_trace)
             await response.write(b"data: [DONE]\n\n")
@@ -530,6 +701,11 @@ async def finalize_handler(request):
             result = {"status": "finalized", "changed": changed}
         except Exception as e:
             result = {"status": "error", "error": str(e)}
+    # 退出前卸载本地模型（释放显存，下次进软件按需再启动）
+    try:
+        await asyncio.to_thread(_unload_local)
+    except Exception:
+        pass
     # 停止主动触发调度器 + 关闭 MCP 连接
     try:
         await active_scheduler.stop()
@@ -559,9 +735,14 @@ async def cors_options(request):
 # ===================== 启动 =====================
 
 def create_app():
-    app = web.Application()
+    # client_max_size=30MB：图片 base64 请求体可能 >1MB（aiohttp 默认 1MB 会直接拒掉）
+    app = web.Application(client_max_size=30 * 1024 * 1024)
     # API 路由
     app.router.add_get("/health", health)
+    app.router.add_get("/health/full", health_full_handler)
+    app.router.add_get("/local/status", local_status_handler)
+    app.router.add_post("/local/start", local_start_handler)
+    app.router.add_post("/local/stop", local_stop_handler)
     app.router.add_post("/chat", chat_handler)
     app.router.add_post("/chat/stream", chat_stream_handler)
     app.router.add_get("/history", history_handler)

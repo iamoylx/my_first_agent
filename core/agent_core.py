@@ -270,14 +270,23 @@ async def detect_tool_call(messages: list, tools: list, api_key: str,
     """
     llm = _get_llm(api_key, base_url, model)
     lc_msgs = _to_lc_messages(messages, images)
-    try:
-        ai = await llm.bind_tools(tools).ainvoke(lc_msgs)
-        return _ai_to_dict(ai)
-    except Exception as e:
-        # 模型不支持工具调用（如本地 gemma3 视觉模型）：降级为"无工具"，直接生成回答
-        if "does not support tools" in str(e).lower() or "tool" in str(e).lower() and "support" in str(e).lower():
-            return {"role": "assistant", "content": ""}
-        raise
+    last_err = None
+    for _attempt in range(2):   # 本地模型偶发畸形工具调用 → 重试一次
+        try:
+            ai = await llm.bind_tools(tools).ainvoke(lc_msgs)
+            return _ai_to_dict(ai)
+        except Exception as e:
+            msg = str(e).lower()
+            last_err = e
+            # 模型不支持工具调用（如无工具 token 的模型）：降级为"无工具"，直接生成回答
+            if "does not support tools" in msg or ("tool" in msg and "support" in msg):
+                return {"role": "assistant", "content": ""}
+            # 畸形工具调用（Ollama 校验参数失败，如空 JSON）：重试一次
+            if "invalid tool call" in msg or "tool call arguments" in msg or "tool_calls" in msg and "invalid" in msg:
+                continue
+            raise
+    # 重试仍失败：降级为直接回答，避免整轮 500
+    return {"role": "assistant", "content": ""}
 
 
 # ===================== 2. 流式：最终回答逐字回调（LangChain astream）=====================
@@ -485,7 +494,8 @@ def _format_tool_call(name, args):
 async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
                        tools: list, tool_map: dict, api_key: str,
                        on_token=None, on_thinking=None, task_store=None,
-                       llm_base=None, llm_model=None, images=None) -> list:
+                       llm_base=None, llm_model=None, images=None,
+                       history_budget: int = 12000) -> list:
     """处理一次用户输入的完整流程：工具调用循环 + 流式最终回答 + 抽取缓冲 + 落盘。
     返回更新后的 messages。
     on_token(chunk) 在每个流式字上触发（首个 chunk 到达即代表 TALKING 开始）。
@@ -503,6 +513,10 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
     # 及时生效：每轮先刷新 system，让上一轮对话中写入档案的记忆进入上下文
     _refresh_system_context(messages, mem)
     messages.append({"role": "user", "content": user_text})
+
+    # 调用前先按本轮预算裁剪历史（本地模型上下文有限时传小 history_budget，
+    # 否则旧历史（上一轮 12000 预算）会把本地 16K 上下文撑爆）
+    messages = mem.prune(messages, max_tokens=history_budget, soft_ratio=0.8)
 
     # 思考轨迹：记忆上下文注入
     try:
@@ -660,8 +674,8 @@ async def process_turn(*, messages: list, user_text: str, mem: MemoryStore,
         # ---- 增量抽取缓冲（写读分离，离线真正抽取在 finalize）----
         mem.buffer_round(user_text, answer)
 
-        # ---- 安全截断 ----
-        messages = mem.prune(messages, max_tokens=12000, soft_ratio=0.8)
+        # ---- 安全截断（本地模型上下文有限时传更小 history_budget）----
+        messages = mem.prune(messages, max_tokens=history_budget, soft_ratio=0.8)
 
         # ---- 每轮结束静默落盘（防关窗丢记忆）----
         mem.autosave(messages)

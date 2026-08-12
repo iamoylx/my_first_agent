@@ -194,6 +194,9 @@ Rust 侧 Tauri Commands（前端 `invoke` 名）：`start_python_server` / `stop
 - **必填**：`DEEPSEEK_API_KEY`（缺失启动即报错）。
 - **可选**：`TAVILY_API_KEY`（联网搜索）、`AGENT_USER_ID`（记忆隔离，默认 `default`）、`AGENT_PORT`（桌面后端端口，默认 `18789`）、`WECOM_WEBHOOK_URL`（企业微信群机器人 webhook，配置后主动消息同步推送企微）。
 - **A3 本地模型**：`AGENT_LOCAL_BASE`（默认 `http://127.0.0.1:11434/v1`）、`AGENT_LOCAL_MODEL`（默认 `qwen3-vl:4b`，需本机 Ollama 已导入该模型）。客户端聊天头部有 **DeepSeek / 本地** 切换按钮（localStorage 记忆）：
+  - **按需启动**：每次登录后第一次选「本地」弹确认框，确认才启动 Ollama+模型（预加载）；切回 DeepSeek / 退出应用自动卸载释放显存；不选本地零占用。
+  - **连通性检测**：启动自动测后端/DeepSeek/Ollama，连不上不显示「在线」。
+  - **图片**：发送前自动降采样（最大 1280px）+ 请求体上限 30MB；本地模式只注入离线可用工具（时间/计算/记忆/提醒/天气/健康）。
   - **本地模式**：全部消息（含图片）走 qwen3-vl:4b，断网可用，原生工具调用 + 看图；
   - **DeepSeek 模式**：文本走 DeepSeek；仅当发图片时该轮临时走本地视觉（DeepSeek 无视觉）。
   - `AGENT_LOCAL_TEXT=1`：兼容旧逻辑，纯文本也强制走本地。
