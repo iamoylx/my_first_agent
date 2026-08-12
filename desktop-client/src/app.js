@@ -164,16 +164,18 @@ async function refreshConnectivity() {
 
 // ============ 初始化 ============
 document.addEventListener('DOMContentLoaded', async () => {
+    // 本地模式需每次登录显式确认才启动：启动时一律回落 DeepSeek，
+    // 只有点击「本地」按钮才弹确认框（不弹则本地零占用）
+    if (currentProvider === 'local') {
+        currentProvider = 'deepseek';
+        localStorage.setItem('xiaoman_provider', 'deepseek');
+    }
     bindEvents();
     await waitForServer();
     if (serverConnected) {
         await refreshConnectivity();
         await loadHistory();
         initActivePush();
-        // 上次会话停在「本地」：本次登录仍要重新确认才启动
-        if (currentProvider === 'local') {
-            requestLocalApproval();
-        }
     }
 });
 
