@@ -41,6 +41,7 @@ from skills.reminder_tools import TOOLS as rt_tools, TOOL_MAP as rt_map
 from skills.reminder_tools.store import TaskStore
 from skills.weather import TOOLS as w_tools, TOOL_MAP as w_map
 from skills.health_record import TOOLS as hr_tools, TOOL_MAP as hr_map
+from skills.vision import describe_image
 import core.agent_core as core
 import active
 from mcp_bridge import MCPManager
@@ -384,6 +385,14 @@ async def chat_handler(request):
                     images = [img_b64 if img_b64.startswith("data:") else "data:image/png;base64," + img_b64]
         except Exception:
             pass
+        # 视觉 skill：DeepSeek 模式发图 → 本地模型先把图片转成文字描述，
+        # 注入用户消息后交给 DeepSeek（相当于给 DeepSeek 接上"眼睛"）
+        if provider == "deepseek" and images:
+            desc = await describe_image(images[0], API_KEY,
+                                        base_url=AGENT_LOCAL_BASE, model=AGENT_LOCAL_MODEL)
+            if desc:
+                user_text = (f"（用户发来一张图片，图片内容：{desc[:800]}）\n\n{user_text}")
+                images = None   # DeepSeek 已通过描述"看到"图片，不再走本地视觉
         llm_base, llm_model = _route_llm(bool(images), provider)
         is_local = llm_base == AGENT_LOCAL_BASE
         call_tools = _local_tools(tools) if is_local else tools
@@ -488,6 +497,13 @@ async def chat_stream_handler(request):
                         images = [img_b64 if img_b64.startswith("data:") else "data:image/png;base64," + img_b64]
             except Exception:
                 pass
+            # 视觉 skill：DeepSeek 发图 → 本地模型转文字描述，交给 DeepSeek
+            if provider == "deepseek" and images:
+                desc = await describe_image(images[0], API_KEY,
+                                            base_url=AGENT_LOCAL_BASE, model=AGENT_LOCAL_MODEL)
+                if desc:
+                    user_text = (f"（用户发来一张图片，图片内容：{desc[:800]}）\n\n{user_text}")
+                    images = None
             llm_base, llm_model = _route_llm(bool(images), provider)
             is_local = llm_base == AGENT_LOCAL_BASE
             call_tools = _local_tools(tools) if is_local else tools

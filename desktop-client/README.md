@@ -59,6 +59,7 @@ npm run tauri build
 | **模型切换** | 聊天头部 DeepSeek / 本地 一键切换（localStorage 记忆）：本地模式走 Ollama qwen3-vl:4b（断网可用、原生工具+看图）；DeepSeek 模式文本走 DeepSeek、发图临时走本地视觉 |
 | **本地按需启动** | 每次登录后第一次选「本地」弹确认框「是否启动本地模型」；确认才启动 Ollama+模型（预加载），切回 DeepSeek / 退出应用时自动卸载释放显存；平时不选本地零占用 |
 | **图片发送** | 附件图片发送前自动降采样压缩（最大 1280px），请求体上限 30MB；可只发图片不带文字 |
+| **视觉 skill** | DeepSeek 模式发图：本地 qwen3-vl 先把图片转成详细文字描述（物体/场景/颜色/OCR），再交给 DeepSeek 回复——DeepSeek 也能"看图"且保持聪明人格；本地模式看图直接走视觉聚焦 |
 | **连通性检测** | 启动后自动检测：后端/DeepSeek/Ollama 连通状态；连不上不显示「在线」，header 实时显示模型与离线状态 |
 | **WebView2 自适应** | 自动搜索系统 EdgeWebView 运行时，无需手动安装 |
 
