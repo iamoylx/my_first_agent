@@ -500,7 +500,7 @@ def _build_system_content(mem: MemoryStore, now: datetime = None) -> str:
             system_content += (
                 "\n\n[生图路由] 当前为亲密模式：用户要求生图时，优先调用 local_generate_image"
                 "（本地 Stable Diffusion 生成，图片完全不出本机，适合隐私内容）；"
-                "仅在本地 Forge 未启动或调用报错时才退回 Agnes 的 generate_image。"
+                "本地 Forge 未启动时该工具会自动后台拉起并等待就绪；隐私内容绝不上云端，不要改调 Agnes。"
             )
         else:
             system_content += (
