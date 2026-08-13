@@ -9,6 +9,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
+base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 # Job Object：把 Python 子进程绑到"关闭即杀"，保证应用无论怎么退（含被强杀）都不留残留进程

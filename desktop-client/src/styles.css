@@ -558,6 +558,27 @@ html, body {
     border: none;
 }
 
+/* ============ 生成资产（Agnes 生图/生视频）============ */
+.asset-bubble {
+    padding: 8px;
+    max-width: 320px;
+}
+.asset-bubble .asset-img {
+    display: block;
+    max-width: 100%;
+    max-height: 320px;
+    border-radius: var(--radius-md);
+    object-fit: contain;
+    background: #fff;
+}
+.asset-bubble video {
+    display: block;
+    max-width: 100%;
+    max-height: 320px;
+    border-radius: var(--radius-md);
+    background: #000;
+}
+
 /* ============ 思考过程折叠块（阶段0：Thinking Trace）============ */
 .thinking-block {
     align-self: flex-start;

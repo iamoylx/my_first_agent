@@ -41,6 +41,8 @@ from skills.reminder_tools import TOOLS as rt_tools, TOOL_MAP as rt_map
 from skills.reminder_tools.store import TaskStore
 from skills.weather import TOOLS as w_tools, TOOL_MAP as w_map
 from skills.health_record import TOOLS as hr_tools, TOOL_MAP as hr_map
+from skills.agnes_gen import TOOLS as ag_tools, TOOL_MAP as ag_map
+import skills.agnes_gen as agnes_gen
 try:
     # 视觉 skill（可插拔）：用户可安装更好的开源视觉 skill，只要提供
     # async describe_image(data_url, api_key, base_url, model) -> str 即可接入
@@ -73,20 +75,48 @@ AGENT_LOCAL_BASE = os.getenv("AGENT_LOCAL_BASE", "http://127.0.0.1:11434/v1")
 AGENT_LOCAL_MODEL = os.getenv("AGENT_LOCAL_MODEL", "qwen3-vl:8b")
 # AGENT_LOCAL_TEXT=1：纯文本也走本地模型（工具调用会变弱，谨慎开启）
 AGENT_LOCAL_TEXT = os.getenv("AGENT_LOCAL_TEXT") == "1"
+# ============ Agnes AI（免费生图/生视频/对话）============
+# 一个 key 管全部：对话(agnes-2.5-flash) + 生图(agnes-image-2.1-flash) + 生视频(agnes-video-v2.0)。
+# 免费限制：RPM ~20；Key 状态异常（401）时对话会返回清晰报错，不影响 DS/本地模式。
+AGNES_BASE = os.getenv("AGNES_BASE", "https://apihub.agnes-ai.com/v1")
+AGNES_CHAT_MODEL = os.getenv("AGNES_CHAT_MODEL", "agnes-2.5-flash")
+def _read_agnes_key() -> str:
+    """Agnes API Key：优先读 desktop-client/.agnes_key（本地配置，覆盖环境变量，
+    避免启动路径继承了过期/错误的会话变量导致 401）；没有再读 AGNES_API_KEY 环境变量。"""
+    try:
+        f = Path(__file__).resolve().parent / ".agnes_key"
+        if f.exists():
+            k = f.read_text(encoding="utf-8").strip()
+            if k:
+                return k
+    except Exception:
+        pass
+    return (os.getenv("AGNES_API_KEY") or "").strip()
+
+
+AGNES_API_KEY = _read_agnes_key()
 
 
 def _route_llm(images: bool, provider: str = "") -> tuple:
-    """路由：根据前端 provider 选择本轮对话大脑。返回 (base_url, model)。"""
+    """路由：根据前端 provider 选择本轮对话大脑。返回 (base_url, model, api_key)。
+
+    provider: "deepseek" | "local" | "agnes" | ""(自动)。
+    - agnes  ：文本/看图/工具全走 Agnes（agnes-2.5-flash 支持视觉+工具），key 用 AGNES_API_KEY
+    - local  ：Ollama 本地模型（key 无所谓，Ollama 忽略）
+    - deepseek + 图：DeepSeek 无视觉，先走本地视觉转文字描述（在调用方处理）
+    """
+    if provider == "agnes":
+        return AGNES_BASE, AGNES_CHAT_MODEL, AGNES_API_KEY
     if provider == "local":
-        return AGENT_LOCAL_BASE, AGENT_LOCAL_MODEL
+        return AGENT_LOCAL_BASE, AGENT_LOCAL_MODEL, API_KEY
     if images:
         # 任何模式带图都必须走本地视觉（DeepSeek 无视觉）
-        return AGENT_LOCAL_BASE, AGENT_LOCAL_MODEL
+        return AGENT_LOCAL_BASE, AGENT_LOCAL_MODEL, API_KEY
     if provider == "deepseek":
-        return AGENT_LLM_BASE, AGENT_LLM_MODEL
+        return AGENT_LLM_BASE, AGENT_LLM_MODEL, API_KEY
     if AGENT_LOCAL_TEXT:
-        return AGENT_LOCAL_BASE, AGENT_LOCAL_MODEL
-    return AGENT_LLM_BASE, AGENT_LLM_MODEL
+        return AGENT_LOCAL_BASE, AGENT_LOCAL_MODEL, API_KEY
+    return AGENT_LLM_BASE, AGENT_LLM_MODEL, API_KEY
 
 
 PORT = int(os.getenv("AGENT_PORT", "18789"))
@@ -97,7 +127,8 @@ base_tools, base_tool_map = collect_tools((ws_tools, ws_map), (bt_tools, bt_map)
                                 (ct_tools, ct_map), (mt_tools, mt_map),
                                 (rt_tools, rt_map),
                                 (w_tools, w_map),
-                                (hr_tools, hr_map))
+                                (hr_tools, hr_map),
+                                (ag_tools, ag_map))
 tools, tool_map = base_tools, dict(base_tool_map)
 
 # 技能分组（用于前端「技能」按钮展示：自选 skill 命令 agent 执行）
@@ -109,6 +140,7 @@ SKILL_GROUPS = [
     ("reminder", "提醒任务", rt_tools),
     ("weather", "天气", w_tools),
     ("health", "健康记录", hr_tools),
+    ("agnes", "Agnes 生成", ag_tools),
 ]
 
 # 本地模型（qwen3-vl:4b）上下文有限（16K），只注入离线可用的核心工具，
@@ -156,6 +188,52 @@ active_scheduler = active.ActiveScheduler(mem, log_dir=PROJECT_ROOT / "logs",
                                           task_user_id=os.getenv("AGENT_USER_ID", "default"))
 ws_carrier = active.WebSocketCarrier()
 active_scheduler.register_carrier(ws_carrier)
+
+
+# ============ Agnes 生成资产收集 ============
+_ASSET_TAG = "@@ASSET@@"
+_ASSET_RE = re.compile(r"@@ASSET@@(.*?)@@ASSET@@", re.DOTALL)
+
+
+def _collect_assets(messages: list) -> list:
+    """扫描会话工具结果，收集 Agnes 生成的图片/视频资产；并清理 @@ASSET@@ 机器标记，
+    避免把内部标记留在历史里污染后续上下文。返回 [{kind, path}, ...]。"""
+    assets = []
+    for m in messages:
+        if m.get("role") != "tool":
+            continue
+        content = m.get("content") or ""
+        if _ASSET_TAG not in content:
+            continue
+        for mm in _ASSET_RE.finditer(content):
+            try:
+                info = json.loads(mm.group(1))
+                if info.get("kind") in ("image", "video") and info.get("path"):
+                    assets.append({"kind": info["kind"], "path": str(info["path"])})
+            except Exception:
+                pass
+        m["content"] = _ASSET_RE.sub("", content).strip()
+    return assets
+
+
+async def _asset_done_push(kind: str, path: str) -> None:
+    """后台图片/视频生成完成：把文件推给前端展示（WS 下发给主窗口/桌宠）。"""
+    try:
+        await ws_carrier.send({"type": "asset", "kind": kind, "path": path,
+                               "ts": time.time()})
+        if kind == "video":
+            await ws_carrier.send({"type": "active",
+                                   "text": "视频做好啦！🎬 已经放到聊天里，快看看吧～",
+                                   "ts": time.time()})
+        else:
+            await ws_carrier.send({"type": "active",
+                                   "text": "图片生成好啦～🖼️ 已经放到聊天里，快看看吧！",
+                                   "ts": time.time()})
+    except Exception:
+        pass
+
+
+agnes_gen.register_asset_done_callback(_asset_done_push)
 wecom_url = os.getenv("WECOM_WEBHOOK_URL") or ""
 if wecom_url:
     active_scheduler.register_carrier(active.WeComCarrier(wecom_url))
@@ -421,7 +499,7 @@ async def chat_handler(request):
             if desc:
                 user_text = (f"（用户发来一张图片，图片内容：{desc[:800]}）\n\n{user_text}")
                 images = None   # DeepSeek 已通过描述"看到"图片，不再走本地视觉
-        llm_base, llm_model = _route_llm(bool(images), provider)
+        llm_base, llm_model, llm_key = _route_llm(bool(images), provider)
         is_local = llm_base == AGENT_LOCAL_BASE
         call_tools = _local_tools(tools) if is_local else tools
         history_budget = 3000 if is_local else 12000
@@ -448,7 +526,7 @@ async def chat_handler(request):
                 mem=mem,
                 tools=call_tools,
                 tool_map=tool_map,
-                api_key=API_KEY,
+                api_key=llm_key,
                 on_token=on_token,
                 on_thinking=on_thinking,
                 task_store=task_store,
@@ -463,12 +541,14 @@ async def chat_handler(request):
             reply = "".join(tokens_buffer)
             pending_memory = PENDING_PROFILE[pend_before:]
             _log_thinking(user_text, thinking_trace)
+            assets = _collect_assets(messages)
             return web.json_response({
                 "reply": reply,
                 "history_len": len(messages),
                 "thinking": thinking_trace,
                 "model": llm_model,
                 "pending_memory": pending_memory,
+                "assets": assets,
             })
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -538,7 +618,7 @@ async def chat_stream_handler(request):
                 if desc:
                     user_text = (f"（用户发来一张图片，图片内容：{desc[:800]}）\n\n{user_text}")
                     images = None
-            llm_base, llm_model = _route_llm(bool(images), provider)
+            llm_base, llm_model, llm_key = _route_llm(bool(images), provider)
             is_local = llm_base == AGENT_LOCAL_BASE
             call_tools = _local_tools(tools) if is_local else tools
             history_budget = 3000 if is_local else 12000
@@ -552,7 +632,7 @@ async def chat_stream_handler(request):
                 mem=mem,
                 tools=call_tools,
                 tool_map=tool_map,
-                api_key=API_KEY,
+                api_key=llm_key,
                 on_token=sse_send,
                 on_thinking=_collect,
                 task_store=task_store,
@@ -565,6 +645,10 @@ async def chat_stream_handler(request):
                 light_context=light_context,
             )
             _log_thinking(user_text, thinking_trace)
+            for _a in _collect_assets(messages):
+                await response.write(
+                    ("data: " + json.dumps({"type": "asset", "kind": _a["kind"],
+                                            "path": _a["path"]}, ensure_ascii=False) + "\n\n").encode("utf-8"))
             await response.write(b"data: [DONE]\n\n")
         except Exception as e:
             err = json.dumps({"error": str(e)}, ensure_ascii=False)

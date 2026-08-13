@@ -115,6 +115,18 @@ npx tauri build             # 在 src-tauri/target/release 产出 agent-desktop.
 - 代码在 `wechat_bridge/`（Node ≥ 22，`npm install` 已装 `weixin-agent-sdk`）。
 - 使用：双击 `wechat_bridge/login.bat` 扫码登录 → 双击 `wechat_bridge/start.bat` 后台启动 → 微信里直接和小满对话（同桌面端记忆）。
 - 详细说明 / 环境变量：见 `wechat_bridge/README.md`。
+## 三点八、Agnes AI 接入（免费生图 / 生视频 / 对话）
+
+右上角模型切换新增 **Agnes** 选项（DeepSeek / 本地 / Agnes 三选一）：
+
+- **对话**：`agnes-2.5-flash`（OpenAI 兼容，支持工具调用 + 看图，RPM ~20）
+- **生图**：`generate_image` 工具 → `agnes-image-2.1-flash` → 存 `generated/` → 聊天直接显示
+- **生视频**：`generate_video` 工具 → `agnes-video-v2.0`（异步）→ 后台轮询 → 完成后 WS 推送到聊天
+- **API Key**：`desktop-client/.agnes_key`（gitignore，优先）或环境变量 `AGNES_API_KEY`，一个 key 全功能
+- 生成文件统一落在项目根 `generated/`（gitignore，运行时产物）
+
+> 内容合规说明：Agnes 平台侧有内容审核，成人/违规内容无法绕过生成，本集成不做任何绕过。
+
 ## 四、模块接口定义与必要路径
 
 ### 4.1 统一记忆层 `MemoryStore`（`memory/store.py`）

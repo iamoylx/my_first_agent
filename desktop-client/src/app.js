@@ -79,11 +79,13 @@ let connectivity = null;          // {deepseek_ok, ollama_running, local_model_r
 
 // ============ 模型切换（DeepSeek / 本地，按需启动本地模型）============
 function providerLabel(p) {
-    return p === 'local' ? '本地 Qwen3-VL' : 'DeepSeek';
+    if (p === 'local') return '本地 Qwen3-VL';
+    if (p === 'agnes') return 'Agnes';
+    return 'DeepSeek';
 }
 
 function applyProvider(p) {
-    if (p !== 'deepseek' && p !== 'local') return;
+    if (p !== 'deepseek' && p !== 'local' && p !== 'agnes') return;
     currentProvider = p;
     localStorage.setItem('xiaoman_provider', p);
     document.querySelectorAll('#provider-toggle .provider-btn').forEach(btn => {
@@ -107,7 +109,7 @@ function updateHeaderStatus() {
 
 /** 点击切换：本地首次需要确认启动；切回 DeepSeek 时顺手卸载本地模型释放显存 */
 async function setProvider(p) {
-    if (p !== 'deepseek' && p !== 'local') return;
+    if (p !== 'deepseek' && p !== 'local' && p !== 'agnes') return;
     if (p === currentProvider) return;
     if (p === 'local') {
         if (!localApproved) {
@@ -117,10 +119,10 @@ async function setProvider(p) {
         const ok = await startLocalModel();
         if (ok) applyProvider('local');
     } else {
-        // 切回 DeepSeek：卸载本地模型（尽力而为，失败不影响切换）
+        // 切回 DeepSeek / Agnes：卸载本地模型（尽力而为，失败不影响切换）
         const invoke = getInvoke();
         if (invoke) { invoke('local_stop').catch(() => {}); }
-        applyProvider('deepseek');
+        applyProvider(p);
     }
 }
 
@@ -558,6 +560,10 @@ function connectActiveWS(port) {
     activeWS.onmessage = (ev) => {
         try {
             const data = JSON.parse(ev.data);
+            if (data && data.type === 'asset' && data.path) {
+                renderAssetFromPath(data.kind || 'image', data.path);
+                return;
+            }
             if (data && data.type === 'active' && data.text) {
                 appendMessage(data.text, 'ai');
                 scrollToBottom();
@@ -774,7 +780,8 @@ async function sendMessage() {
         // DeepSeek 模式发图：图片必须走本地视觉模型（DeepSeek 无视觉），
         // 自动确保本地模型就绪，无需手动切到本地模式
         const hasImage = !!(pendingAttachment && pendingAttachment.dataUrl);
-        if (hasImage && currentProvider !== 'local') {
+        // DeepSeek 无视觉 → 走本地视觉；Agnes(agnes-2.5-flash) 支持看图 → 直接发给它
+        if (hasImage && currentProvider !== 'local' && currentProvider !== 'agnes') {
             appendMessage('图片由本地视觉模型识别，正在准备本地模型…', 'system');
             scrollToBottom();
             const ready = await ensureLocalReady();
@@ -799,6 +806,9 @@ async function sendMessage() {
                 appendThinkingBlock(data.thinking);
             }
             await typeMessage(data.reply, 'ai');
+            if (Array.isArray(data.assets) && data.assets.length) {
+                await renderAssets(data.assets);
+            }
             if (Array.isArray(data.pending_memory) && data.pending_memory.length) {
                 appendPendingMemoryBlock(data.pending_memory);
             }
@@ -869,6 +879,74 @@ async function typeMessage(text, role) {
 
     bubble.innerHTML = displayed.replace(/\n/g, '<br>');
     bubble.classList.remove('typing-cursor');
+}
+
+/**
+ * 渲染 Agnes 生成的图片/视频资产（本地文件 → data URL → 消息气泡）
+ */
+async function renderAssets(assets) {
+    const invoke = getInvoke();
+    if (!invoke) return;
+    for (const a of (assets || [])) {
+        try {
+            const dataUrl = await invoke('read_media_as_data_url', { path: a.path });
+            if (typeof dataUrl === 'string' && dataUrl.startsWith('data:')) {
+                appendAsset(a.kind, dataUrl);
+            } else {
+                appendMessage(`[生成结果] 已保存到本地：${a.path}`, 'system');
+            }
+        } catch (err) {
+            console.error('[Asset] 读取失败:', err);
+            appendMessage(`[生成结果] 已保存到本地：${a.path}`, 'system');
+        }
+    }
+}
+
+/** 追加一条图片/视频气泡（小满侧） */
+function appendAsset(kind, dataUrl) {
+    const div = document.createElement('div');
+    div.className = 'message message-ai';
+
+    const avatar = document.createElement('img');
+    avatar.className = 'message-avatar';
+    avatar.src = 'assets/avatar.png';
+    avatar.alt = '小满';
+    div.appendChild(avatar);
+
+    const bubble = document.createElement('div');
+    bubble.className = 'message-bubble asset-bubble';
+    if (kind === 'video') {
+        const video = document.createElement('video');
+        video.src = dataUrl;
+        video.controls = true;
+        video.autoplay = false;
+        video.preload = 'metadata';
+        bubble.appendChild(video);
+    } else {
+        const img = document.createElement('img');
+        img.src = dataUrl;
+        img.alt = '生成的图片';
+        img.className = 'asset-img';
+        bubble.appendChild(img);
+    }
+    div.appendChild(bubble);
+    messagesContainer.appendChild(div);
+    scrollToBottom();
+}
+
+/** 从本地路径渲染资产（后台视频完成时 WS 推送） */
+function renderAssetFromPath(kind, path) {
+    const invoke = getInvoke();
+    if (!invoke) return;
+    invoke('read_media_as_data_url', { path })
+        .then(dataUrl => {
+            if (typeof dataUrl === 'string' && dataUrl.startsWith('data:')) {
+                appendAsset(kind, dataUrl);
+            } else {
+                appendMessage(`[生成结果] 已保存到本地：${path}`, 'system');
+            }
+        })
+        .catch(() => appendMessage(`[生成结果] 已保存到本地：${path}`, 'system'));
 }
 
 /**

@@ -822,3 +822,39 @@ pub fn wechat_start() -> Result<serde_json::Value, String> {
 pub fn wechat_autostart(enabled: bool) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "ok": true, "startup_enabled": set_run_key(enabled) }))
 }
+
+/// 把本地生成文件（图片/视频）读成 data URL，供前端 <img>/<video> 直接渲染。
+/// 由 Agnes 生图/生视频工具生成在 generated/ 下；文件过大（>40MB）拒绝，避免内存撑爆。
+#[tauri::command]
+pub fn read_media_as_data_url(path: String) -> Result<String, String> {
+    use std::io::Read;
+    let p = std::path::PathBuf::from(&path);
+    if !p.is_file() {
+        return Err(format!("文件不存在: {path}"));
+    }
+    let mut f = std::fs::File::open(&p).map_err(|e| format!("打开文件失败: {e}"))?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).map_err(|e| format!("读取文件失败: {e}"))?;
+    if buf.is_empty() {
+        return Err("文件为空".to_string());
+    }
+    if buf.len() > 40 * 1024 * 1024 {
+        return Err("文件过大（>40MB），无法在聊天里直接展示".to_string());
+    }
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "mkv" => "video/x-matroska",
+        _ => "application/octet-stream",
+    };
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
+    Ok(format!("data:{mime};base64,{b64}"))
+}

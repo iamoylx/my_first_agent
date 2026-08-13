@@ -178,6 +178,7 @@ pub fn run() {
             commands::profile_pending,
             commands::profile_pending_apply,
             commands::profile_pending_discard,
+            commands::read_media_as_data_url,
             mark_boot,
         ])
         .run(tauri::generate_context!())
