@@ -440,6 +440,7 @@ async def chat_handler(request):
         def on_thinking(ev):
             thinking_trace.append(ev)
 
+        pend_before = len(PENDING_PROFILE)   # 本轮新增的记忆提案（写读分离，勾选才落盘）
         try:
             messages = await core.process_turn(
                 messages=messages,
@@ -460,12 +461,14 @@ async def chat_handler(request):
                 light_context=light_context,
             )
             reply = "".join(tokens_buffer)
+            pending_memory = PENDING_PROFILE[pend_before:]
             _log_thinking(user_text, thinking_trace)
             return web.json_response({
                 "reply": reply,
                 "history_len": len(messages),
                 "thinking": thinking_trace,
                 "model": llm_model,
+                "pending_memory": pending_memory,
             })
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -611,6 +614,142 @@ async def profile_handler(request):
 
 
 # ===================== 档案卡人工管理（客户端记忆 UI） =====================
+
+# ============ 待审批记忆写入（用户勾选才落盘）============
+# write_memory / save_important 不再直接写档案卡，改为生成「提案」，
+# 前端在消息下方展示（灰色小字、默认折叠、默认不勾选），勾选后才真正写入。
+PENDING_PROFILE = []   # 提案列表：{id, op, key, value, type, confidence, ts}
+_pending_seq = 0
+
+
+async def _propose_memory(key, value, ftype, confidence, op="set"):
+    """生成一条记忆写入提案（不落盘）。已存在同 key 同 value 且生效时不重复提案。"""
+    global _pending_seq
+    try:
+        prof = mem.load_profile()
+        old = (prof.get("facts", {}) or {}).get(key)
+        if isinstance(old, dict) and old.get("active") is not False:
+            if str(old.get("value")) == str(value):
+                return f"该记忆已存在，未重复提交：{key} = {value}"
+    except Exception:
+        pass
+    _pending_seq += 1
+    PENDING_PROFILE.append({
+        "id": f"p{_pending_seq}",
+        "op": op,
+        "key": key,
+        "value": value,
+        "type": ftype,
+        "confidence": confidence,
+        "ts": time.time(),
+    })
+    return f"已提交记忆写入申请：{key} = {value}（在客户端「写入的记忆」勾选后才会写入档案卡）"
+
+
+async def _propose_write_memory(mem=None, key="", value="", fact_type="fact",
+                                confidence=0.9, text="", content="", note="", **extra) -> str:
+    if mem is None:
+        return "错误：记忆系统不可用（未注入 MemoryStore）"
+    if not key:
+        key = "important_note"
+    if not value:
+        value = text or content or note
+    key = (key or "").strip()
+    value = str(value or "").strip()
+    if not key or not value:
+        return "错误：key 和 value 都不能为空"
+    ftype = fact_type if fact_type in ("fact", "preference") else "fact"
+    try:
+        conf = float(confidence)
+    except (TypeError, ValueError):
+        conf = 0.9
+    conf = max(0.0, min(1.0, conf))
+    return await _propose_memory(key, value, ftype, conf, op="set")
+
+
+async def _propose_save_important(mem=None, text="", content="", note="", title="", **extra) -> str:
+    if mem is None:
+        return "错误：记忆系统不可用（未注入 MemoryStore）"
+    item = (text or content or note or title or "").strip()
+    if not item:
+        return "错误：内容为空"
+    return await _propose_memory("important_notes", item, "fact", 0.95, op="append")
+
+
+# 记忆写入工具改为「提案」模式：不再直接写档案卡，先提交待审批（勾选才落盘）
+for _mt_name in ("write_memory", "save_important"):
+    if _mt_name in tool_map:
+        tool_map[_mt_name] = _propose_write_memory if _mt_name == "write_memory" else _propose_save_important
+
+
+async def profile_pending_handler(request):
+    """GET /profile/pending — 待审批记忆写入提案列表。"""
+    return web.json_response({"items": PENDING_PROFILE})
+
+
+async def profile_pending_apply_handler(request):
+    """POST /profile/pending/apply — 勾选生效：把选中的提案写入档案卡。Body: {"ids": [...]}"""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    ids = set(str(i) for i in (data.get("ids") or []))
+    applied, failed = 0, 0
+    keep = []
+    for it in PENDING_PROFILE:
+        if it["id"] in ids:
+            ok = False
+            try:
+                if it.get("op") == "append":
+                    prof = mem.load_profile()
+                    old = (prof.get("facts", {}) or {}).get("important_notes", {}).get("value")
+                    if isinstance(old, list):
+                        notes = old + [it["value"]]
+                    elif isinstance(old, str) and old.strip():
+                        notes = [old, it["value"]]
+                    else:
+                        notes = [it["value"]]
+                    extracted = [{"key": "important_notes", "value": notes,
+                                  "confidence": 0.95, "type": "fact"}]
+                else:
+                    extracted = [{"key": it["key"], "value": it["value"],
+                                  "confidence": it["confidence"], "type": it["type"]}]
+                mem.update_profile(extracted)
+                ok = True
+            except Exception:
+                ok = False
+            if ok:
+                applied += 1
+            else:
+                failed += 1
+                keep.append(it)
+        else:
+            keep.append(it)
+    PENDING_PROFILE[:] = keep
+    return web.json_response({"ok": True, "applied": applied, "failed": failed})
+
+
+async def profile_pending_discard_handler(request):
+    """POST /profile/pending/discard — 放弃：从待审批列表移除。Body: {"ids": [...]} 或 {"all": true}"""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    if data.get("all"):
+        n = len(PENDING_PROFILE)
+        PENDING_PROFILE.clear()
+        return web.json_response({"ok": True, "discarded": n})
+    ids = set(str(i) for i in (data.get("ids") or []))
+    n = 0
+    keep = []
+    for it in PENDING_PROFILE:
+        if it["id"] in ids:
+            n += 1
+        else:
+            keep.append(it)
+    PENDING_PROFILE[:] = keep
+    return web.json_response({"ok": True, "discarded": n})
+
 
 async def profile_items_handler(request):
     """GET /profile/items — 返回档案卡全部事实/偏好（含 active 生效开关），供管理页展示。"""
@@ -870,6 +1009,9 @@ def create_app():
     # 素材静态代理
     app.router.add_get("/assets/{path:.*}", assets_proxy)
     app.router.add_post("/carriers/wechat", wechat_carrier_handler)
+    app.router.add_get("/profile/pending", profile_pending_handler)
+    app.router.add_post("/profile/pending/apply", profile_pending_apply_handler)
+    app.router.add_post("/profile/pending/discard", profile_pending_discard_handler)
     # CORS
     app.router.add_options("/{path:.*}", cors_options)
     return app

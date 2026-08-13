@@ -402,6 +402,117 @@ async function toggleIntimacy() {
 
 if (btnIntimacy) btnIntimacy.addEventListener('click', toggleIntimacy);
 
+// ============ 待审批记忆写入（勾选才落盘）============
+// 后端把 write_memory / save_important 变成「提案」返回给前端：
+// 消息下方灰色小字、默认折叠、默认不勾选；勾选才真正写入档案卡并生效。
+// 已渲染过的提案 id（避免重复渲染：微信触发的提案在桌面开着时也会自动出现）
+const _renderedPendingIds = new Set();
+
+async function refreshPendingMemory() {
+    const invoke = getInvoke();
+    if (!invoke) return;
+    try {
+        const data = await invoke('profile_pending');
+        const items = (data && data.items) || [];
+        const fresh = items.filter(i => !_renderedPendingIds.has(i.id));
+        if (fresh.length) appendPendingMemoryBlock(fresh);
+    } catch (_) { /* 忽略 */ }
+}
+
+function appendPendingMemoryBlock(items) {
+    if (!items || !items.length) return;
+    items.forEach(i => _renderedPendingIds.add(i.id));
+    const div = document.createElement('div');
+    div.className = 'pending-memory';
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'pending-toggle';
+    toggle.title = '点击展开/收起记忆写入项（勾选才写入，不勾选即放弃）';
+    const arrow = document.createElement('span');
+    arrow.className = 'pending-arrow';
+    arrow.textContent = '▸';
+    toggle.appendChild(document.createTextNode(''));
+    toggle.appendChild(arrow);
+    const updateHeader = () => {
+        toggle.firstChild.textContent = `📝 写入的记忆（${remaining}）`;
+    };
+    let remaining = items.length;
+    updateHeader();
+
+    const body = document.createElement('div');
+    body.className = 'pending-body';
+    body.hidden = true;
+
+    items.forEach(item => {
+        const row = document.createElement('label');
+        row.className = 'pending-row';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        const txt = document.createElement('span');
+        txt.className = 'pending-text';
+        const keyEl = document.createElement('span');
+        keyEl.className = 'pending-key';
+        keyEl.textContent = item.key;
+        const valEl = document.createElement('span');
+        valEl.className = 'pending-value';
+        valEl.textContent = ' = ' + (item.value || '');
+        txt.appendChild(keyEl);
+        txt.appendChild(valEl);
+        row.appendChild(cb);
+        row.appendChild(txt);
+        body.appendChild(row);
+
+        cb.addEventListener('change', async () => {
+            if (!cb.checked) return;
+            cb.disabled = true;
+            try {
+                await invoke('profile_pending_apply', { ids: [item.id] });
+                row.classList.add('pending-applied');
+                cb.style.visibility = 'hidden';
+                remaining = Math.max(0, remaining - 1);
+                updateHeader();
+            } catch (err) {
+                cb.disabled = false;
+                cb.checked = false;
+                row.classList.add('pending-error');
+                row.title = String(err);
+            }
+        });
+    });
+
+    // 全部忽略：放弃这些记忆写入项
+    const ignoreBtn = document.createElement('button');
+    ignoreBtn.type = 'button';
+    ignoreBtn.className = 'pending-ignore';
+    ignoreBtn.textContent = '全部忽略';
+    ignoreBtn.title = '放弃这些记忆写入项';
+    ignoreBtn.addEventListener('click', async () => {
+        try {
+            await invoke('profile_pending_discard', { ids: items.map(i => i.id) });
+        } catch (_) { /* 后端已尽力，前端照常置灰 */ }
+        body.querySelectorAll('.pending-row input').forEach(cb2 => {
+            cb2.disabled = true;
+            cb2.style.visibility = 'hidden';
+        });
+        remaining = 0;
+        updateHeader();
+        ignoreBtn.textContent = '已忽略';
+        ignoreBtn.disabled = true;
+    });
+    body.appendChild(ignoreBtn);
+
+    toggle.addEventListener('click', () => {
+        body.hidden = !body.hidden;
+        toggle.classList.toggle('open', !body.hidden);
+    });
+
+    div.appendChild(toggle);
+    div.appendChild(body);
+    messagesContainer.appendChild(div);
+    scrollToBottom();
+}
+
 // ============ 初始化 ============
 document.addEventListener('DOMContentLoaded', async () => {
     // 本地模式需每次登录显式确认才启动：启动时一律回落 DeepSeek，
@@ -419,6 +530,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         initActivePush();
         initWechatPanel();
         refreshIntimacy();
+        refreshPendingMemory();
+        setInterval(refreshPendingMemory, 60000);
     }
 });
 
@@ -686,6 +799,9 @@ async function sendMessage() {
                 appendThinkingBlock(data.thinking);
             }
             await typeMessage(data.reply, 'ai');
+            if (Array.isArray(data.pending_memory) && data.pending_memory.length) {
+                appendPendingMemoryBlock(data.pending_memory);
+            }
             notifyPetState('response_done');
         }
     } catch (err) {

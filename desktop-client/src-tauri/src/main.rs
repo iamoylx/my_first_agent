@@ -175,6 +175,9 @@ pub fn run() {
             commands::wechat_login,
             commands::wechat_start,
             commands::wechat_autostart,
+            commands::profile_pending,
+            commands::profile_pending_apply,
+            commands::profile_pending_discard,
             mark_boot,
         ])
         .run(tauri::generate_context!())

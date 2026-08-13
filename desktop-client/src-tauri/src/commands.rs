@@ -342,6 +342,57 @@ pub async fn profile_update(key: String, value: Option<String>,
     }
 }
 
+// ===================== 待审批记忆写入（勾选才落盘） =====================
+
+/// 待审批记忆写入提案列表
+#[tauri::command]
+pub async fn profile_pending() -> Result<serde_json::Value, String> {
+    reqwest::get(server_url("/profile/pending"))
+        .await
+        .map_err(|e| format!("请求失败: {e}"))?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 勾选生效：把选中的记忆提案写入档案卡
+#[tauri::command]
+pub async fn profile_pending_apply(ids: Vec<String>) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(server_url("/profile/pending/apply"))
+        .json(&serde_json::json!({"ids": ids}))
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {e}"))?;
+    if resp.status().is_success() {
+        resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+    } else {
+        Err(format!("HTTP {}", resp.status()))
+    }
+}
+
+/// 放弃：从待审批列表移除选中的提案（或全部）
+#[tauri::command]
+pub async fn profile_pending_discard(ids: Vec<String>, all: Option<bool>) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::new();
+    let mut body = serde_json::json!({"ids": ids});
+    if let Some(a) = all {
+        body["all"] = serde_json::Value::Bool(a);
+    }
+    let resp = client
+        .post(server_url("/profile/pending/discard"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {e}"))?;
+    if resp.status().is_success() {
+        resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+    } else {
+        Err(format!("HTTP {}", resp.status()))
+    }
+}
+
 // ===================== 桌宠状态（pet_manager 接线） =====================
 
 /// 设置桌宠状态（前端 invoke），变更时广播事件，桌宠前端监听后切换精灵图。

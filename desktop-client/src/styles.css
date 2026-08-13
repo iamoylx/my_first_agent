@@ -203,6 +203,91 @@ html, body {
     box-shadow: var(--shadow-inset);
 }
 
+/* 待审批记忆写入块（灰色小字，默认折叠，勾选才写入） */
+.pending-memory {
+    align-self: flex-start;
+    max-width: 85%;
+    margin: 2px 0 6px 38px;
+}
+.pending-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: transparent;
+    border: none;
+    padding: 2px 8px;
+    border-radius: 10px;
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: pointer;
+}
+.pending-toggle:hover,
+.pending-toggle.open {
+    color: var(--text-secondary);
+    background: rgba(0, 0, 0, 0.04);
+}
+.pending-arrow {
+    font-size: 10px;
+    transition: transform 0.15s var(--ease-out);
+}
+.pending-toggle.open .pending-arrow {
+    transform: rotate(90deg);
+}
+.pending-body {
+    margin: 6px 0 8px 4px;
+    padding: 8px 12px;
+    background: rgba(0, 0, 0, 0.035);
+    border-left: 2px solid rgba(0, 0, 0, 0.10);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.7;
+}
+.pending-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    margin: 4px 0;
+    cursor: pointer;
+}
+.pending-row input[type="checkbox"] {
+    margin-top: 3px;
+    cursor: pointer;
+    accent-color: var(--accent);
+}
+.pending-key {
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+.pending-value {
+    word-break: break-all;
+    white-space: pre-wrap;
+}
+.pending-applied {
+    color: #27ae60;
+}
+.pending-error {
+    color: #c0392b;
+}
+.pending-ignore {
+    margin-top: 6px;
+    background: transparent;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    color: var(--text-muted);
+    border-radius: 8px;
+    padding: 2px 10px;
+    font-size: 11px;
+    cursor: pointer;
+}
+.pending-ignore:hover {
+    color: var(--text-secondary);
+    border-color: var(--text-secondary);
+}
+.pending-ignore:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
 /* ===== 右侧：聊天面板 ===== */
 .chat-panel {
     flex: 1;
