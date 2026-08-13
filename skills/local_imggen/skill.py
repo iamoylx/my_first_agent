@@ -168,12 +168,16 @@ async def generate_image(prompt: str, negative_prompt: str = '',
         return '错误：Forge 返回空结果'
 
     paths = []
+    import base64
     for i, b64_img in enumerate(images):
-        if not b64_img or not b64_img.startswith('data:'):
-            raw = b64_img.encode('utf-8')
+        if not b64_img:
+            continue
+        # Forge 返回的是不带 data: 前缀的原始 base64；统一解码，避免把 base64 文本当文件写入
+        if b64_img.startswith('data:'):
+            b64_data = b64_img.split(',', 1)[1]
         else:
-            import base64
-            raw = base64.b64decode(b64_img.split(',', 1)[1] if ',' in b64_img else b64_img)
+            b64_data = b64_img
+        raw = base64.b64decode(b64_data)
         idx_str = '' if len(images) == 1 else f'-{i+1}'
         out_path = GEN_DIR / f'local-img-{int(time.time()*1000)}{idx_str}.png'
         out_path.write_bytes(raw)
