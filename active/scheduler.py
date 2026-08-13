@@ -28,7 +28,7 @@ class ActiveScheduler:
         if sources_cfg.get("clock", {}).get("enabled", True):
             self._sources.append(ClockSource(mem, self.config))
         if sources_cfg.get("idle", {}).get("enabled", True):
-            self._sources.append(IdleSource(sources_cfg.get("idle", {}) or {}))
+            self._sources.append(IdleSource(sources_cfg.get("idle", {}) or {}, mem=mem))
         # 提醒任务源（独立 task_data/，与记忆分离）
         if task_dir:
             try:

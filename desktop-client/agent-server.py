@@ -43,6 +43,7 @@ from skills.weather import TOOLS as w_tools, TOOL_MAP as w_map
 from skills.health_record import TOOLS as hr_tools, TOOL_MAP as hr_map
 from skills.agnes_gen import TOOLS as ag_tools, TOOL_MAP as ag_map
 import skills.agnes_gen as agnes_gen
+from skills.local_imggen import TOOLS as li_tools, TOOL_MAP as li_map
 try:
     # 视觉 skill（可插拔）：用户可安装更好的开源视觉 skill，只要提供
     # async describe_image(data_url, api_key, base_url, model) -> str 即可接入
@@ -70,7 +71,7 @@ if not API_KEY:
 #   deepseek → 文本走 DeepSeek；仅当带图片时该轮走本地视觉（DeepSeek 无视觉能力）
 #   ""(自动) → 兼容旧逻辑：图片→本地视觉；纯文本→DeepSeek（或 AGENT_LOCAL_TEXT=1 时走本地）
 AGENT_LLM_BASE = os.getenv("AGENT_LLM_BASE", "https://api.deepseek.com/v1")
-AGENT_LLM_MODEL = os.getenv("AGENT_LLM_MODEL", "deepseek-chat")
+AGENT_LLM_MODEL = os.getenv("AGENT_LLM_MODEL", "deepseek-v4-flash")
 AGENT_LOCAL_BASE = os.getenv("AGENT_LOCAL_BASE", "http://127.0.0.1:11434/v1")
 AGENT_LOCAL_MODEL = os.getenv("AGENT_LOCAL_MODEL", "qwen3-vl:8b")
 # AGENT_LOCAL_TEXT=1：纯文本也走本地模型（工具调用会变弱，谨慎开启）
@@ -149,7 +150,8 @@ base_tools, base_tool_map = collect_tools((ws_tools, ws_map), (bt_tools, bt_map)
                                 (rt_tools, rt_map),
                                 (w_tools, w_map),
                                 (hr_tools, hr_map),
-                                (ag_tools, ag_map))
+                                (ag_tools, ag_map),
+                                (li_tools, li_map))
 tools, tool_map = base_tools, dict(base_tool_map)
 
 # 技能分组（用于前端「技能」按钮展示：自选 skill 命令 agent 执行）
@@ -162,7 +164,56 @@ SKILL_GROUPS = [
     ("weather", "天气", w_tools),
     ("health", "健康记录", hr_tools),
     ("agnes", "Agnes 生成", ag_tools),
+    ("local_imggen", "本地生图", li_tools),
 ]
+
+# 工具中文名（前端「技能」面板展示用；键 = 工具英文名）
+_TOOL_CN = {
+    "web_search": "联网搜索",
+    "get_current_time": "当前时间",
+    "calculator": "计算器",
+    "read_file": "读文件",
+    "list_dir": "列出目录",
+    "search_files": "查找文件",
+    "search_content": "搜索内容",
+    "run_command": "运行命令",
+    "write_memory": "写入记忆",
+    "save_important": "保存重要",
+    "recall_important": "查看重要",
+    "create_reminder": "创建提醒",
+    "list_reminders": "提醒列表",
+    "delete_reminder": "删除提醒",
+    "get_weather": "查天气",
+    "record_health": "记录健康",
+    "health_records": "健康记录",
+    "generate_image": "生成图片",
+    "generate_video": "生成视频",
+    "local_generate_image": "本地生图",
+}
+
+# 工具一句话短介绍（覆盖长 description；未列出的用原 description 截断）
+_TOOL_SHORT = {
+    "web_search": "查实时信息/新闻",
+    "get_current_time": "查当前时间",
+    "calculator": "数学计算",
+    "read_file": "读取项目文件",
+    "list_dir": "浏览目录结构",
+    "search_files": "按名查找文件",
+    "search_content": "在文件里搜内容",
+    "run_command": "执行一条命令",
+    "write_memory": "记一条事实/偏好",
+    "save_important": "存一条重要事项",
+    "recall_important": "翻出重要事项",
+    "create_reminder": "到点提醒你",
+    "list_reminders": "看有哪些提醒",
+    "delete_reminder": "取消一条提醒",
+    "get_weather": "查天气/带不带伞",
+    "record_health": "记睡眠/体重等",
+    "health_records": "查健康记录",
+    "generate_image": "Agnes 画一张图",
+    "generate_video": "Agnes 生成视频",
+    "local_generate_image": "本地生图（隐私）",
+}
 
 # 本地模型（qwen3-vl:4b）上下文有限（16K），只注入离线可用的核心工具，
 # 避免全部工具 schema + 历史 + 图片撑爆上下文；web_search/code_tools/MCP 不注入。
@@ -171,6 +222,7 @@ LOCAL_TOOL_NAMES = {
     "write_memory", "save_important", "recall_important",
     "create_reminder", "list_reminders", "delete_reminder",
     "get_weather", "record_health", "health_records",
+    "local_generate_image",
 }
 
 
@@ -559,7 +611,7 @@ async def chat_handler(request):
                 vision_focus=vision_focus,
                 light_context=light_context,
             )
-            reply = "".join(tokens_buffer)
+            reply = "".join(tokens_buffer).lstrip()   # 去掉模型偶发的前导空行/空白（首行空）
             pending_memory = PENDING_PROFILE[pend_before:]
             _log_thinking(user_text, thinking_trace)
             assets = _collect_assets(messages)
@@ -725,17 +777,46 @@ async def profile_handler(request):
 # 前端在消息下方展示（灰色小字、默认折叠、默认不勾选），勾选后才真正写入。
 PENDING_PROFILE = []   # 提案列表：{id, op, key, value, type, confidence, ts}
 _pending_seq = 0
+# 提案持久化：跨会话保留（退出时 finalize 的自动抽取也进提案，用户下次启动还能勾选）
+_PENDING_FILE = PROJECT_ROOT / "memory_data" / "pending.json"
 
 
-async def _propose_memory(key, value, ftype, confidence, op="set"):
-    """生成一条记忆写入提案（不落盘）。已存在同 key 同 value 且生效时不重复提案。"""
+def _load_pending():
+    global _pending_seq
+    try:
+        if _PENDING_FILE.exists():
+            items = json.loads(_PENDING_FILE.read_text(encoding="utf-8")) or []
+            PENDING_PROFILE[:] = [i for i in items if isinstance(i, dict) and i.get("id")]
+            ids = [int(i["id"][1:]) for i in PENDING_PROFILE
+                   if str(i.get("id", "")).startswith("p") and str(i["id"])[1:].isdigit()]
+            _pending_seq = max(ids) if ids else 0
+    except Exception:
+        pass
+
+
+def _save_pending():
+    try:
+        _PENDING_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = str(_PENDING_FILE) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(PENDING_PROFILE, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, _PENDING_FILE)
+    except Exception:
+        pass
+
+
+_load_pending()
+
+
+def _propose(key, value, ftype, confidence, op="set") -> bool:
+    """生成一条记忆写入提案（写入 PENDING_PROFILE 并持久化）。返回是否新增。"""
     global _pending_seq
     try:
         prof = mem.load_profile()
         old = (prof.get("facts", {}) or {}).get(key)
         if isinstance(old, dict) and old.get("active") is not False:
             if str(old.get("value")) == str(value):
-                return f"该记忆已存在，未重复提交：{key} = {value}"
+                return False
     except Exception:
         pass
     _pending_seq += 1
@@ -748,6 +829,15 @@ async def _propose_memory(key, value, ftype, confidence, op="set"):
         "confidence": confidence,
         "ts": time.time(),
     })
+    _save_pending()
+    return True
+
+
+async def _propose_memory(key, value, ftype, confidence, op="set"):
+    """生成一条记忆写入提案（不直接写档案卡）。已存在同 key 同 value 且生效时不重复提案。"""
+    added = _propose(key, value, ftype, confidence, op=op)
+    if not added:
+        return f"该记忆已存在，未重复提交：{key} = {value}"
     return f"已提交记忆写入申请：{key} = {value}（在客户端「写入的记忆」勾选后才会写入档案卡）"
 
 
@@ -831,6 +921,7 @@ async def profile_pending_apply_handler(request):
         else:
             keep.append(it)
     PENDING_PROFILE[:] = keep
+    _save_pending()
     return web.json_response({"ok": True, "applied": applied, "failed": failed})
 
 
@@ -843,6 +934,7 @@ async def profile_pending_discard_handler(request):
     if data.get("all"):
         n = len(PENDING_PROFILE)
         PENDING_PROFILE.clear()
+        _save_pending()
         return web.json_response({"ok": True, "discarded": n})
     ids = set(str(i) for i in (data.get("ids") or []))
     n = 0
@@ -853,6 +945,7 @@ async def profile_pending_discard_handler(request):
         else:
             keep.append(it)
     PENDING_PROFILE[:] = keep
+    _save_pending()
     return web.json_response({"ok": True, "discarded": n})
 
 
@@ -987,10 +1080,17 @@ async def skills_handler(request):
     """GET /skills — 返回全部已安装技能（按组），供前端「技能」按钮自选并命令 agent 执行。"""
     groups = []
     for gid, gname, gtools in SKILL_GROUPS:
-        items = [{
-            "name": t.get("function", {}).get("name") or t.get("name"),
-            "description": ((t.get("function", {}).get("description") or t.get("description") or "")[:120]),
-        } for t in gtools if t.get("function", {}).get("name") or t.get("name")]
+        items = []
+        for t in gtools:
+            tname = t.get("function", {}).get("name") or t.get("name")
+            if not tname:
+                continue
+            desc = (t.get("function", {}).get("description") or t.get("description") or "")
+            items.append({
+                "name": tname,
+                "name_cn": _TOOL_CN.get(tname, tname),
+                "description": (_TOOL_SHORT.get(tname) or desc[:30] or ""),
+            })
         if items:
             groups.append({"id": gid, "name": gname, "tools": items})
     # MCP 工具并入"外部服务"组
@@ -1039,6 +1139,23 @@ async def ws_handler(request):
     return ws
 
 
+async def _facts_to_pending(new_facts) -> int:
+    """finalize 自动抽取的事实 → 待审批提案（勾选才落盘），返回新增提案数。"""
+    n = 0
+    for f in new_facts or []:
+        key = str(f.get("key") or "").strip()
+        value = f.get("value")
+        if not key or value in (None, ""):
+            continue
+        try:
+            conf = float(f.get("confidence") or 0.8)
+        except (TypeError, ValueError):
+            conf = 0.8
+        if _propose(key, value, f.get("type", "fact"), conf, op="set"):
+            n += 1
+    return n
+
+
 async def finalize_handler(request):
     """POST /finalize — 会话结束兜底：归档 + 离线抽取档案卡，完成后退出服务。
 
@@ -1048,7 +1165,8 @@ async def finalize_handler(request):
     """
     async with chat_lock:
         try:
-            changed = await core.finalize(messages, mem, API_KEY)
+            changed = await core.finalize(messages, mem, API_KEY,
+                                        fact_sink=_facts_to_pending)
             result = {"status": "finalized", "changed": changed}
         except Exception as e:
             result = {"status": "error", "error": str(e)}

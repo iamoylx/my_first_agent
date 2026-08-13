@@ -201,7 +201,7 @@ function renderSkillMenu() {
         <div class="skill-group">
             <div class="skill-group-name">${g.name}</div>
             ${g.tools.map(t => `<button class="skill-item" data-name="${t.name}">
-                <b>${t.name}</b><span>${t.description || ''}</span>
+                <b>${t.name_cn || t.name}</b><span>${t.description || ''}</span>
             </button>`).join('')}
         </div>`).join('');
     menu.innerHTML = html;

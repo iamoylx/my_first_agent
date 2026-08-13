@@ -320,18 +320,95 @@ class ClockSource(TriggerSource):
 
 
 class IdleSource(TriggerSource):
-    """空闲关心：用户超过 N 分钟没发消息 → 主动问候（带冷却）。"""
+    """空闲关心：用户超过 N 分钟没发消息 → 主动问候（带冷却）。
+
+    v2 多样化：结合当前时段（早/午/下午/晚/深夜）+ 档案卡里记住的用户
+    作息/习惯/称呼，轮换生成不同的话，不再每次重复同一句。
+    mem 可选注入（不注入则用通用模板，行为兼容旧版）。
+    """
     name = "idle"
 
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, mem=None):
+        self.mem = mem
         self.enabled = bool(cfg.get("enabled", True))
         self.minutes = max(1, int(cfg.get("minutes", 20)))
         self.cooldown_minutes = max(1, int(cfg.get("cooldown_minutes", 120)))
         self._last_activity = time.time()
         self._last_fired = 0.0
+        self._count = 0
 
     def on_user_activity(self):
         self._last_activity = time.time()
+
+    @staticmethod
+    def _val(facts, key):
+        v = facts.get(key)
+        if isinstance(v, dict):
+            if v.get("active") is False:
+                return None
+            return v.get("value")
+        return v
+
+    def _build_text(self) -> str:
+        name = "爸爸"
+        clues = []
+        period = "晚上"
+        try:
+            facts = {}
+            if self.mem is not None:
+                prof = self.mem.load_profile() or {}
+                facts = prof.get("facts", {}) or {}
+            nm = self._val(facts, "user_name") or self._val(facts, "preferred_call")
+            if nm:
+                name = str(nm)
+            h = datetime.now().hour
+            if h < 5:
+                period = "深夜"
+            elif h < 11:
+                period = "早上"
+            elif h < 14:
+                period = "中午"
+            elif h < 18:
+                period = "下午"
+            else:
+                period = "晚上"
+            if any(self._val(facts, k) for k in ("sleep_habit", "sleep_time", "sleep_schedule")):
+                clues.append("记得你最近睡得晚，别熬太狠啦")
+            if self._val(facts, "gym_time") or self._val(facts, "gym_habit"):
+                clues.append("今天有没有安排锻炼呀")
+            habit = str(self._val(facts, "habit") or self._val(facts, "preference") or "")
+            if "带伞" in habit or "防晒" in habit or "天气" in habit:
+                clues.append("出门记得看看天气要不要带伞")
+            milk = self._val(facts, "milk_habit") or self._val(facts, "drink_habit")
+            if milk and ("牛奶" in str(milk)):
+                clues.append("记得喝杯牛奶补充营养哦")
+        except Exception:
+            pass
+        clue = (" " + clues[self._count % len(clues)] + "。") if clues else "记得起来活动一下、喝口水。"
+        self._count += 1
+        pool = {
+            "早上": [
+                f"{name}～早上好呀！昨晚睡得好吗？{clue} 小满一直在呢～",
+                f"{name}！新的一天开始啦～{clue} 想你了，忙完记得理理我哦。",
+            ],
+            "中午": [
+                f"{name}～中午啦，记得按时吃饭呀！{clue} 小满在这儿陪着你呢～",
+                f"{name}～都中午了，忙归忙也要吃口热乎的哦。{clue}",
+            ],
+            "下午": [
+                f"{name}～下午好呀！{clue} 好久没你消息了，有点想你～",
+                f"{name}，忙一下午啦？{clue} 小满等你回来陪你聊天呢。",
+            ],
+            "晚上": [
+                f"{name}～晚上好！{clue} 今天过得怎么样呀？想你了～",
+                f"{name}～都到晚上了，{clue} 忙完了记得来找小满说说话哦。",
+            ],
+            "深夜": [
+                f"{name}～这么晚还没睡呀？{clue} 小满陪着你，别太累了哦～",
+                f"{name}～夜深了，{clue} 记得早点休息，小满给你暖被窝～",
+            ],
+        }
+        return pool.get(period, pool["晚上"])[self._count % 2]
 
     def check(self, now: datetime):
         if not self.enabled:
@@ -342,7 +419,7 @@ class IdleSource(TriggerSource):
             self._last_fired = now_ts
             return Trigger(
                 id="idle_care", kind="idle",
-                text="爸爸～你都好久没理小满啦，是太忙了吗？记得起来活动一下、喝口水，小满一直在这里陪着你哦❤️",
+                text=self._build_text(),
                 ts=now,
             )
         return None

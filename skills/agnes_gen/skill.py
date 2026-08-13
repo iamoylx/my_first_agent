@@ -139,8 +139,8 @@ async def generate_image(prompt: str = "", size: str = "1024x768") -> str:
     try:
         task = asyncio.create_task(_image_job(prompt, size))
         try:
-            # 先同步等最多 75s：多数时候能直接随本轮回复给出图片
-            path = await asyncio.wait_for(asyncio.shield(task), timeout=75)
+            # 先同步等最多 150s：多数时候能直接随本轮回复给出图片
+            path = await asyncio.wait_for(asyncio.shield(task), timeout=150)
             return (f"图片已生成，已保存到本地：{path}\n"
                     f"{_asset_mark('image', path)}")
         except asyncio.TimeoutError:
@@ -235,7 +235,7 @@ async def generate_video(prompt: str = "", width: int = 1152, height: int = 768,
 
         # 先同步等一小段（45s）：多数小任务这期间能完成，视频直接随本轮回复给出
         try:
-            res = await _poll_video(video_id, max_wait=45.0)
+            res = await _poll_video(video_id, max_wait=90.0)
             if not res.get("_timeout"):
                 path = await _finish_video(video_id)
                 return (f"视频已生成，已保存到本地：{path}\n"

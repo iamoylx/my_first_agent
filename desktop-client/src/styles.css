@@ -808,7 +808,7 @@ html, body {
 }
 .skill-item:hover { background: var(--accent-light); }
 .skill-item b { font-size: 12px; color: var(--text-primary); }
-.skill-item span { font-size: 11px; color: var(--text-muted); line-height: 1.4; }
+.skill-item span { font-size: 11px; color: var(--text-muted); line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .attach-btn {
     display: flex;
