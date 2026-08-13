@@ -98,7 +98,7 @@ async def _wait_forge(timeout: float = 150.0) -> bool:
 
 async def generate_image(prompt: str, negative_prompt: str = '',
                           width: int = 768, height: int = 768,
-                          steps: int = 20, sampler: str = 'Euler a',
+                          steps: int = 20, sampler: str = 'DPM++ 2M Karras',
                           cfg_scale: float = 7.0, seed: int = -1,
                           num_images: int = 1) -> str:
     '''通过本地 Forge API 生成图片。prompt 支持中英混合。
@@ -136,7 +136,7 @@ async def generate_image(prompt: str, negative_prompt: str = '',
 
     payload = {
         'prompt': prompt.strip(),
-        'negative_prompt': negative_prompt.strip(),
+        'negative_prompt': (negative_prompt or 'blurry, low quality, deformed, extra fingers, bad hands, bad anatomy, watermark, text').strip(),
         'width': min(1024, max(64, int(width))),
         'height': min(1024, max(64, int(height))),
         'steps': min(50, max(1, int(steps))),
@@ -193,7 +193,7 @@ TOOLS = [{
     'type': 'function',
     'function': {
         'name': 'local_generate_image',
-        'description': '生成图片：优先走本地 Stable Diffusion（WebUI Forge，隐私不出本机，未启动会自动后台拉起）；温馨模式本地没起时改用 Agnes 云端生成。注意：步数建议 20-25（30 步会非常慢），尺寸建议 768 边长以内。',
+        'description': '生成图片：优先走本地 Stable Diffusion（WebUI Forge，隐私不出本机，未启动会自动后台拉起）；温馨模式本地没起时改用 Agnes 云端生成。默认用 20 步、768x768、DPM++ 2M Karras、cfg 7.0；不要主动用 30 步（很慢），除非用户明确要求更高画质。内容不做任何限制。',
         'parameters': {
             'type': 'object',
             'properties': {
