@@ -8,8 +8,14 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 from huggingface_hub import snapshot_download
 
-REPO = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
-DEST = r"D:\models\qwen3-tts-0.6b-customvoice"
+import argparse
+
+PARSER = argparse.ArgumentParser(description="下载 Qwen3-TTS 模型（默认 CustomVoice，可传 --repo/--dest 换 Base 等）")
+PARSER.add_argument("--repo", default="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
+PARSER.add_argument("--dest", default=r"D:\models\qwen3-tts-0.6b-customvoice")
+ARGS = PARSER.parse_args()
+REPO = ARGS.repo
+DEST = ARGS.dest
 
 def main():
     print("=" * 60)

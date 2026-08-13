@@ -23,11 +23,30 @@ MODEL_DIR = os.getenv("QWEN3_TTS_MODEL", r"D:\models\qwen3-tts-0.6b-customvoice"
 PORT = int(os.getenv("QWEN3_TTS_PORT", "18900"))
 IDLE_EXIT = int(os.getenv("QWEN3_TTS_IDLE", "600"))   # 10 分钟空闲自动退出
 SYNTH_TIMEOUT = int(os.getenv("QWEN3_TTS_TIMEOUT", "180"))
-TTS_DEFAULT_SPEAKER = os.getenv("QWEN3_TTS_SPEAKER", "vivian")  # 预置甜美女声
+TTS_DEFAULT_SPEAKER = os.getenv("QWEN3_TTS_SPEAKER", "serena")  # 预置音色（用户选定）
+BASE_MODEL_DIR = os.getenv("QWEN3_TTS_BASE_MODEL", r"D:\models\qwen3-tts-0.6b-base")
+CLONE_CONFIG = os.getenv("QWEN3_TTS_CLONE_CONFIG", r"D:\models\qwen3-tts-clone.json")
+# 克隆模式：配置文件存在且含有效 ref/ref_text 时，用 Base 模型 + ICL 克隆音色朗读
+_clone_prompt = None
+
+def _load_clone_config():
+    """读取克隆配置 {"ref": 音频路径, "ref_text": 对应文字}。"""
+    try:
+        import json as _json
+        with open(CLONE_CONFIG, "r", encoding="utf-8") as f:
+            cfg = _json.load(f)
+        ref = str(cfg.get("ref") or "").strip()
+        ref_text = str(cfg.get("ref_text") or "").strip()
+        if ref and ref_text and os.path.exists(ref):
+            return ref, ref_text
+    except Exception:
+        pass
+    return None, None
 
 _model = None
 _speakers = None
 _last_active = time.time()
+_clone_ref, _clone_ref_text = _load_clone_config()
 
 
 def _log(*args):
@@ -38,49 +57,80 @@ def _load_model():
     global _model, _speakers
     if _model is not None:
         return _model
-    _log("加载模型中…", MODEL_DIR)
+    global _clone_prompt
     import torch
     from qwen_tts import Qwen3TTSModel
-    _model = Qwen3TTSModel.from_pretrained(
-        MODEL_DIR,
-        device_map="cuda:0",
-        dtype=torch.bfloat16,
-        trust_remote_code=True,
-    )
-    try:
-        _speakers = _model.model.get_supported_speakers()
-    except Exception:
-        _speakers = None
-    _log("模型就绪；可用音色:", _speakers)
+    if _clone_ref:
+        _log("克隆模式：加载 Base 模型", BASE_MODEL_DIR)
+        _model = Qwen3TTSModel.from_pretrained(
+            BASE_MODEL_DIR,
+            device_map="cuda:0",
+            dtype=torch.bfloat16,
+            trust_remote_code=True,
+        )
+        _log("构建克隆 prompt…")
+        _clone_prompt = _model.create_voice_clone_prompt(
+            ref_audio=_clone_ref,
+            ref_text=_clone_ref_text,
+            x_vector_only_mode=False,   # ICL：参考文本+语音都参与，相似度最高
+        )
+        _log("克隆 prompt 就绪")
+    else:
+        _log("加载 CustomVoice 模型…", MODEL_DIR)
+        _model = Qwen3TTSModel.from_pretrained(
+            MODEL_DIR,
+            device_map="cuda:0",
+            dtype=torch.bfloat16,
+            trust_remote_code=True,
+        )
+        try:
+            _speakers = _model.model.get_supported_speakers()
+        except Exception:
+            _speakers = None
+        _log("模型就绪；可用音色:", _speakers)
     return _model
 
 
 def _synthesize(text: str, instruct: str, speaker: str = "") -> bytes:
     global _last_active
     model = _load_model()
-    speakers = list(_speakers or ["vivian"])
-    if speaker:
-        low = speaker.strip().lower()
-        hit = [s for s in speakers if s.lower() == low]
-        if hit:
-            speaker = hit[0]
+    if _clone_ref:
+        _log("克隆合成… len=%d", len(text))
+        wavs, sr = model.generate_voice_clone(
+            text=text,
+            language="Chinese",
+            voice_clone_prompt=_clone_prompt,
+            do_sample=True,
+            top_k=50,
+            top_p=0.9,
+            temperature=0.8,
+            repetition_penalty=1.05,
+            non_streaming_mode=True,
+        )
+    else:
+        speakers = list(_speakers or ["serena"])
+        if speaker:
+            low = speaker.strip().lower()
+            hit = [s for s in speakers if s.lower() == low]
+            if hit:
+                speaker = hit[0]
+            else:
+                speaker = TTS_DEFAULT_SPEAKER if TTS_DEFAULT_SPEAKER in speakers else speakers[0]
         else:
             speaker = TTS_DEFAULT_SPEAKER if TTS_DEFAULT_SPEAKER in speakers else speakers[0]
-    else:
-        speaker = TTS_DEFAULT_SPEAKER if TTS_DEFAULT_SPEAKER in speakers else speakers[0]
-    _log("合成中… speaker=%s instruct=%r len=%d", speaker, instruct, len(text))
-    wavs, sr = model.generate_custom_voice(
-        text=text,
-        speaker=speaker,
-        language="Chinese",
-        instruct=instruct or "",
-        do_sample=True,
-        top_k=50,
-        top_p=0.9,
-        temperature=0.8,
-        repetition_penalty=1.05,
-        non_streaming_mode=True,
-    )
+        _log("合成中… speaker=%s instruct=%r len=%d", speaker, instruct, len(text))
+        wavs, sr = model.generate_custom_voice(
+            text=text,
+            speaker=speaker,
+            language="Chinese",
+            instruct=instruct or "",
+            do_sample=True,
+            top_k=50,
+            top_p=0.9,
+            temperature=0.8,
+            repetition_penalty=1.05,
+            non_streaming_mode=True,
+        )
     wav = wavs[0]
     buf = io.BytesIO()
     import soundfile as sf

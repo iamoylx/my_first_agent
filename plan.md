@@ -220,7 +220,9 @@
   2. `agent-server.py /tts` 引擎抽象 `engine: "auto"|"edge"|"local"`：auto 检测本地模型存在 → 懒启动本地引擎；失败/断网回退 edge
   3. **emoji/markdown/URL 预处理**（`_tts_clean_text`，两引擎统一）：💖☀️😭 等全部清除，不再读符号
   4. **情感注入**（`_tts_instruct`）：开心/难过/关切/默认四类启发式 → 中文语气指令（如「用开心甜蜜的语气，带着笑意」）
-  5. 默认音色 vivian（甜美女声），`QWEN3_TTS_SPEAKER` 可换；试听音频 `tmp/tts_{vivian,serena,ono_anna}.wav`
+  5. 默认音色 **serena**（用户试听后选定；vivian/serena/ono_anna 试听 `tmp/tts_*.wav`），`QWEN3_TTS_SPEAKER` 可换
+- 音色克隆（Base 模型，免训练 ICL）：`scripts/voice_clone.py` 先试效果 → 满意后写 `D:\models\qwen3-tts-clone.json`（ref + ref_text）→ tts_server 自动切克隆模式，日常朗读全用专属音色
+  - Base 模型 `Qwen/Qwen3-TTS-12Hz-0.6B-Base`（~2.5GB）下载中（hf-mirror 拥堵 ~1MB/s，`scripts/download_hf_direct.py` 直连绕过 snapshot_download 卡顿）
 - 性能实测（4070 8G）：首次点朗读（含模型加载）~30-50s，之后每次 ~26s/句；与本地 LLM 错峰（模型加载时 qwen3-vl 会释放部分显存）
 - 待办（可选）：前端音色选择器；VoiceClone 用 10~30s 参考音频克隆「小满专属音色」
 

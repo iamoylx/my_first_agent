@@ -374,7 +374,7 @@ TTS_DEFAULT_VOICE = os.getenv("AGENT_TTS_VOICE", "zh-CN-XiaoxiaoNeural")  # 晓�
 TTS_MAX_CHARS = int(os.getenv("AGENT_TTS_MAX_CHARS", "3000"))
 TTS_LOCAL_PORT = int(os.getenv("QWEN3_TTS_PORT", "18900"))
 TTS_LOCAL_URL = f"http://127.0.0.1:{TTS_LOCAL_PORT}"
-TTS_LOCAL_SPEAKER = os.getenv("QWEN3_TTS_SPEAKER", "vivian")  # 本地引擎预置音色（甜美女声）
+TTS_LOCAL_SPEAKER = os.getenv("QWEN3_TTS_SPEAKER", "serena")  # 本地引擎预置音色（用户试听后选定 serena）
 TTS_LOCAL_MODEL_DIR = os.getenv("QWEN3_TTS_MODEL", r"D:\models\qwen3-tts-0.6b-customvoice")
 _tts_local_proc = None
 
