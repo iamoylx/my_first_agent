@@ -155,7 +155,6 @@ pub fn run() {
             commands::local_start,
             commands::local_stop,
             commands::send_chat,
-            commands::tts_speak,
             commands::get_history,
             commands::reset_chat_session,
             commands::get_profile_items,

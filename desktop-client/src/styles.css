@@ -558,35 +558,6 @@ html, body {
     border: none;
 }
 
-/* ============ TTS 朗读按钮（A4：消息下方，灰色小字，点按才调用）============ */
-.tts-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    margin: 6px 0 2px 38px;      /* 与 AI 气泡对齐（头像 30px + 间距 8px） */
-    padding: 3px 10px;
-    font-size: 11px;
-    line-height: 1.4;
-    color: var(--text-muted);
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: 20px;
-    cursor: pointer;
-    transition: all var(--transition-fast);
-    user-select: none;
-    align-self: flex-start;
-    flex-shrink: 0;
-}
-.tts-btn:hover:not(:disabled) {
-    color: var(--accent);
-    border-color: var(--accent);
-    background: var(--accent-glow);
-}
-.tts-btn:disabled {
-    opacity: 0.55;
-    cursor: default;
-}
-
 /* ============ 思考过程折叠块（阶段0：Thinking Trace）============ */
 .thinking-block {
     align-self: flex-start;
