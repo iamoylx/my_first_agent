@@ -360,6 +360,62 @@ async def health_full_handler(request):
     })
 
 
+# ===================== TTS 语音合成（A4：edge-tts 在线，点按才调用） =====================
+try:
+    import edge_tts
+except Exception:
+    edge_tts = None
+
+TTS_DEFAULT_VOICE = os.getenv("AGENT_TTS_VOICE", "zh-CN-XiaoxiaoNeural")  # 晓晓：甜美女声
+TTS_MAX_CHARS = int(os.getenv("AGENT_TTS_MAX_CHARS", "3000"))
+
+
+async def _edge_tts_synth(text: str, voice: str) -> bytes:
+    """调用 edge-tts 流式合成，返回 mp3 字节。"""
+    communicate = edge_tts.Communicate(text, voice)
+    chunks = []
+    async for chunk in communicate.stream():
+        if chunk.get("type") == "audio":
+            chunks.append(chunk.get("data") or b"")
+    return b"".join(chunks)
+
+
+async def tts_handler(request):
+    """POST /tts — edge-tts 在线文字转语音（A4 朗读按钮）。
+
+    Body: {"text": "...", "voice": "zh-CN-XiaoxiaoNeural"(可选)}
+    返回: {"ok": true, "audio_b64": "...", "mime": "audio/mpeg", "chars": n}
+    设计：不点不调用、不常驻任何模型/进程——仅在按钮被点击时在线合成一次。
+    """
+    if edge_tts is None:
+        return web.json_response({"error": "edge-tts 未安装：pip install edge-tts"}, status=500)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    text = (body.get("text") or "").strip()
+    if not text:
+        return web.json_response({"error": "text 不能为空"}, status=400)
+    if len(text) > TTS_MAX_CHARS:
+        text = text[:TTS_MAX_CHARS]
+    voice = (body.get("voice") or TTS_DEFAULT_VOICE).strip() or TTS_DEFAULT_VOICE
+    try:
+        audio = await asyncio.wait_for(_edge_tts_synth(text, voice), timeout=60)
+    except asyncio.TimeoutError:
+        return web.json_response({"error": "TTS 合成超时（网络不可达？）"}, status=504)
+    except Exception as e:
+        return web.json_response({"error": f"TTS 合成失败：{e}"}, status=500)
+    if not audio:
+        return web.json_response({"error": "TTS 未生成音频"}, status=500)
+    return web.json_response({
+        "ok": True,
+        "audio_b64": base64.b64encode(audio).decode("ascii"),
+        "mime": "audio/mpeg",
+        "chars": len(text),
+    })
+
+
+
 async def init_session():
     """构建初始会话（恢复历史 + 注入档案）。"""
     global messages, system_msg
@@ -1004,6 +1060,7 @@ def create_app():
     app.router.add_get("/ws", ws_handler)
     # MCP 工具状态（B1）
     app.router.add_get("/skills", skills_handler)
+    app.router.add_post("/tts", tts_handler)
     app.router.add_get("/mcp/tools", mcp_tools_handler)
 
     # 素材静态代理

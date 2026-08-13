@@ -229,6 +229,37 @@ pub async fn send_chat(
     }
 }
 
+/// 文字转语音（A4：edge-tts 在线合成）→ POST /tts
+/// 前端「🔊 朗读」按钮点按才调用；返回 {ok, audio_b64, mime}
+#[tauri::command]
+pub async fn tts_speak(text: String, voice: Option<String>) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::new();
+    let mut body = serde_json::json!({"text": text});
+    if let Some(v) = voice {
+        if !v.trim().is_empty() {
+            body["voice"] = serde_json::Value::String(v);
+        }
+    }
+    let resp = client
+        .post(server_url("/tts"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {e}"))?;
+    if resp.status().is_success() {
+        resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+    } else {
+        // 非 2xx：透传服务端真实错误
+        let status = resp.status();
+        match resp.json::<serde_json::Value>().await {
+            Ok(v) => Err(v.get("error").and_then(|e| e.as_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| format!("HTTP {}", status))),
+            Err(_) => Err(format!("HTTP {}", status)),
+        }
+    }
+}
+
 /// 获取聊天历史
 #[tauri::command]
 pub async fn get_history() -> Result<serde_json::Value, String> {

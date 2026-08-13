@@ -813,6 +813,62 @@ async function sendMessage() {
     }
 }
 
+// ============ TTS 朗读（A4：edge-tts 在线合成，点按才调用） ============
+const DEFAULT_TTS_VOICE = 'zh-CN-XiaoxiaoNeural';   // 晓晓：甜美女声，最贴合小满
+
+/** 在 AI 消息下方加「🔊 朗读」按钮（不点不调用、不占用任何资源） */
+function addTtsButton(msgDiv, text) {
+    if (!text || !text.trim()) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'tts-btn';
+    btn.textContent = '🔊 朗读';
+    btn.title = '点击用声音读出这条消息（edge-tts 在线合成，不点不调用）';
+    btn.addEventListener('click', () => ttsSpeak(text, btn));
+    msgDiv.appendChild(btn);
+}
+
+/** 调用后端合成并播放。在线时几秒出声音；断网/失败会明确提示。 */
+async function ttsSpeak(text, btn) {
+    const invoke = getInvoke();
+    if (!invoke) { appendMessage('[错误] Tauri API 未注入', 'system'); return; }
+    const clean = (text || '').trim();
+    if (!clean) { btn.textContent = '🔊 朗读'; return; }
+    if (btn.dataset.busy === '1') return;
+    btn.dataset.busy = '1';
+    btn.disabled = true;
+    btn.textContent = '合成中…';
+    const restore = () => {
+        btn.textContent = '🔊 朗读';
+        btn.disabled = false;
+        btn.dataset.busy = '';
+    };
+    try {
+        const data = await invoke('tts_speak', { text: clean, voice: DEFAULT_TTS_VOICE });
+        if (!data || !data.audio_b64) throw new Error((data && data.error) || '未返回音频');
+        const bytes = Uint8Array.from(atob(data.audio_b64), c => c.charCodeAt(0));
+        const blob = new Blob([bytes], { type: data.mime || 'audio/mpeg' });
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        btn.textContent = '播放中…';
+        audio.onended = () => { URL.revokeObjectURL(url); restore(); };
+        audio.onerror = () => {
+            URL.revokeObjectURL(url);
+            appendMessage('[错误] 语音播放失败', 'system');
+            restore();
+        };
+        await audio.play().catch(() => {
+            URL.revokeObjectURL(url);
+            restore();
+            appendMessage('[提示] 播放被浏览器拦截，再点一次试试', 'system');
+        });
+    } catch (err) {
+        console.error('[Agent] TTS error:', err);
+        appendMessage(`[错误] 语音合成失败：${err}`, 'system');
+        restore();
+    }
+}
+
 /**
  * 追加一条消息到聊天区
  */
@@ -835,6 +891,7 @@ function appendMessage(content, role) {
     }
 
     div.appendChild(bubble);
+    if (role === 'ai') addTtsButton(div, content);
     messagesContainer.appendChild(div);
     scrollToBottom();
 }
@@ -869,6 +926,7 @@ async function typeMessage(text, role) {
 
     bubble.innerHTML = displayed.replace(/\n/g, '<br>');
     bubble.classList.remove('typing-cursor');
+    addTtsButton(div, displayed);
 }
 
 /**
