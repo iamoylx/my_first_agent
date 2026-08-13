@@ -24,7 +24,7 @@ PORT = int(os.getenv("QWEN3_TTS_PORT", "18900"))
 IDLE_EXIT = int(os.getenv("QWEN3_TTS_IDLE", "600"))   # 10 分钟空闲自动退出
 SYNTH_TIMEOUT = int(os.getenv("QWEN3_TTS_TIMEOUT", "180"))
 TTS_DEFAULT_SPEAKER = os.getenv("QWEN3_TTS_SPEAKER", "serena")  # 预置音色（用户选定）
-BASE_MODEL_DIR = os.getenv("QWEN3_TTS_BASE_MODEL", r"D:\models\qwen3-tts-0.6b-base")
+BASE_MODEL_DIR = os.getenv("QWEN3_TTS_BASE_MODEL", r"D:\models\qwen3-tts-1.7b-base")  # 1.7B：音质更自然（用户选定）
 CLONE_CONFIG = os.getenv("QWEN3_TTS_CLONE_CONFIG", r"D:\models\qwen3-tts-clone.json")
 # 克隆模式：配置文件存在且含有效 ref/ref_text 时，用 Base 模型 + ICL 克隆音色朗读
 _clone_prompt = None
@@ -101,9 +101,9 @@ def _synthesize(text: str, instruct: str, speaker: str = "") -> bytes:
             language="Chinese",
             voice_clone_prompt=_clone_prompt,
             do_sample=True,
-            top_k=50,
+            top_k=30,
             top_p=0.9,
-            temperature=0.8,
+            temperature=0.6,
             repetition_penalty=1.05,
             non_streaming_mode=True,
         )
@@ -125,9 +125,9 @@ def _synthesize(text: str, instruct: str, speaker: str = "") -> bytes:
             language="Chinese",
             instruct=instruct or "",
             do_sample=True,
-            top_k=50,
+            top_k=30,
             top_p=0.9,
-            temperature=0.8,
+            temperature=0.6,
             repetition_penalty=1.05,
             non_streaming_mode=True,
         )
