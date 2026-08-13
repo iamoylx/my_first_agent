@@ -814,7 +814,7 @@ async function sendMessage() {
 }
 
 // ============ TTS 朗读（A4：edge-tts 在线合成，点按才调用） ============
-const DEFAULT_TTS_VOICE = 'zh-CN-XiaoxiaoNeural';   // 晓晓：甜美女声，最贴合小满
+const DEFAULT_TTS_VOICE = 'zh-CN-XiaoxiaoNeural';   // edge 兜底音色（本地引擎忽略此参数）
 
 /** 在 AI 消息下方加「🔊 朗读」按钮（不点不调用、不占用任何资源） */
 function addTtsButton(msgDiv, text) {
@@ -823,7 +823,7 @@ function addTtsButton(msgDiv, text) {
     btn.type = 'button';
     btn.className = 'tts-btn';
     btn.textContent = '🔊 朗读';
-    btn.title = '点击用声音读出这条消息（edge-tts 在线合成，不点不调用）';
+    btn.title = '点击朗读（本地 Qwen3-TTS 优先，有情感；断网/失败回退在线 edge-tts）';
     btn.addEventListener('click', () => ttsSpeak(text, btn));
     msgDiv.appendChild(btn);
 }

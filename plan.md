@@ -4,8 +4,8 @@
 > 本地模型、主动触发、生活/健康 skill、MCP 数据源、微信接入。
 > 本文件是路线图 + 决策记录；标注"待决策/分支"的条目为长期选项，先不实施。
 >
-> **当前进度（2026-08-13）**：阶段0/A1/A2/记忆v3/B1/A3/A4 已完成；
-> 下一步：A4.2（Qwen3-TTS 离线克隆，B 计划）→ B2 健康数据（随手表决策）→ C 系列（微信/常驻化）。
+> **当前进度（2026-08-13）**：阶段0/A1/A2/记忆v3/B1/A3/A4/A4.2 已完成；
+> 下一步：B2 健康数据（随手表决策）→ C 系列（微信/常驻化）。
 
 ---
 
@@ -211,15 +211,18 @@
   - 状态流转：朗读 → 合成中… → 播放中… → 朗读；失败/断网明确提示
 - 依赖：`pip install edge-tts`（已装 7.2.8）
 
-### A4.2 B 计划（下一步候选）：Qwen3-TTS-0.6B 离线克隆 ⏳ 待实施
-> 目标：断网也能用小满专属音色；**免训练**、10~30 秒参考音频即可克隆（VoiceClone）。
-- 模型：`Qwen/Qwen3-TTS-0.6B`（~2GB 权重；4bit 量化推理峰值 ~1~2GB 显存）
-- 落地方式：
-  1. 后端加 TTS 引擎抽象 `engine: "edge" | "local"`（/tts 预留 voice 参数；local 走独立进程）
-  2. 本地引擎**懒加载**：首次点「朗读」才加载，合成完 + 闲置 N 分钟自动卸载（释放显存）
-  3. 与本地 LLM（qwen3-vl:8b）**错峰**：同一时刻只让一个大模型驻留显存；4bit 下共存约 7G/8G 偏紧
-  4. 音色克隆：准备 10~30s 小满参考音频 → VoiceClone 配置 → 前端加「我的音色」切换
-- 内存评估（16GB 机器）：qwen3-vl ~5G + 系统/桌面/微信桥 ~6G 后余量 ~4-5G；本地 TTS 不可常驻，必须点按启动+用完卸载
+### A4.2 B 计划（Qwen3-TTS 本地引擎）✅ 已完成 2026-08-13
+> 目标达成：断网也能用小满专属音色；有情感、不读 emoji。
+- 模型：`Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`（~2.3GB，D:\models\qwen3-tts-0.6b-customvoice，hf-mirror 镜像下载）
+- 引擎能力：`generate_custom_voice(text, speaker, language, instruct)` —— **instruct 自然语言情感指令** + 9 个预置音色（vivian/serena/ono_anna 等女声）+ 未来 VoiceClone 免训练克隆
+- 落地方式（已实现）：
+  1. `desktop-client/tts_server.py`：独立进程（端口 18900），模型懒加载 + 空闲 600s 自动退出释放显存
+  2. `agent-server.py /tts` 引擎抽象 `engine: "auto"|"edge"|"local"`：auto 检测本地模型存在 → 懒启动本地引擎；失败/断网回退 edge
+  3. **emoji/markdown/URL 预处理**（`_tts_clean_text`，两引擎统一）：💖☀️😭 等全部清除，不再读符号
+  4. **情感注入**（`_tts_instruct`）：开心/难过/关切/默认四类启发式 → 中文语气指令（如「用开心甜蜜的语气，带着笑意」）
+  5. 默认音色 vivian（甜美女声），`QWEN3_TTS_SPEAKER` 可换；试听音频 `tmp/tts_{vivian,serena,ono_anna}.wav`
+- 性能实测（4070 8G）：首次点朗读（含模型加载）~30-50s，之后每次 ~26s/句；与本地 LLM 错峰（模型加载时 qwen3-vl 会释放部分显存）
+- 待办（可选）：前端音色选择器；VoiceClone 用 10~30s 参考音频克隆「小满专属音色」
 
 ### A4.3 C（用户不优先，暂缓）：GPT-SoVITS v4 专属音色训练 ⏸️ 不考虑
 - 推理 FP16 ~5G 显存；训练仅能 LoRA（8G 卡跑不了全量 14G）
@@ -236,7 +239,7 @@
 4. **C2 后台常驻服务化**：小满变成常驻服务（开机自启 + 通知），桌面为前台 UI
 5. **C3 多端界面**：手机端（配合企微/微信）、Web 面板（会话/档案/健康可视化）
 6. **MCP 启用项**：browser-use（需 `playwright install chromium` + LLM key）、音乐（扫码登录）、日历（飞书 OAuth）——模板就绪，配好即用
-7. **A4.2 B 计划**：Qwen3-TTS-0.6B 离线克隆（免训练、10~30s 参考音频、4bit ~1-2G 显存、懒加载+用完卸载、与本地 LLM 错峰）
+7. ~~A4.2 B 计划~~ ✅ 已完成：Qwen3-TTS-0.6B-CustomVoice 本地引擎（有情感 + 去 emoji + 懒加载 + 空闲卸载）；待办：前端音色选择器 / VoiceClone 专属音色
 8. **小增强**：Windows 通知 Toast（装 winotify 启用）、思考可视化真流式（SSE 前端接入）、记忆 value 级模糊相似索引、桌宠气泡点击联动主窗口
 
 ---

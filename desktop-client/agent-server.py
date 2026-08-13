@@ -360,7 +360,11 @@ async def health_full_handler(request):
     })
 
 
-# ===================== TTS 语音合成（A4：edge-tts 在线，点按才调用） =====================
+# ===================== TTS 语音合成（A4 朗读按钮 + B 本地引擎） =====================
+# 引擎策略：
+#   engine="local"  → 本地 Qwen3-TTS-0.6B（有情感、无 emoji 呆滞，断网可用；懒加载 + 空闲卸载）
+#   engine="edge"   → edge-tts 在线（零占用，但语气平淡、会读符号）
+#   engine="auto"   → 本地服务在跑则用本地，否则回退 edge（默认）
 try:
     import edge_tts
 except Exception:
@@ -368,6 +372,74 @@ except Exception:
 
 TTS_DEFAULT_VOICE = os.getenv("AGENT_TTS_VOICE", "zh-CN-XiaoxiaoNeural")  # 晓晓：甜美女声
 TTS_MAX_CHARS = int(os.getenv("AGENT_TTS_MAX_CHARS", "3000"))
+TTS_LOCAL_PORT = int(os.getenv("QWEN3_TTS_PORT", "18900"))
+TTS_LOCAL_URL = f"http://127.0.0.1:{TTS_LOCAL_PORT}"
+TTS_LOCAL_SPEAKER = os.getenv("QWEN3_TTS_SPEAKER", "vivian")  # 本地引擎预置音色（甜美女声）
+TTS_LOCAL_MODEL_DIR = os.getenv("QWEN3_TTS_MODEL", r"D:\models\qwen3-tts-0.6b-customvoice")
+_tts_local_proc = None
+
+
+# ---------- 文本预处理：朗读前清理 emoji / markdown / URL（edge 和 local 统一生效） ----------
+def _tts_clean_text(text: str) -> str:
+    t = text or ""
+    # 去 emoji（含肤色修饰符、ZWJ 序列）
+    t = re.sub(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D\U0001F3FB-\U0001F3FF]", "", t)
+    # markdown：**粗体** / *斜体* / `行内代码` → 保留文字
+    t = re.sub(r"\*\*(.+?)\*\*", r"\1", t)
+    t = re.sub(r"\*(.+?)\*", r"\1", t)
+    t = re.sub(r"`(.+?)`", r"\1", t)
+    # 链接 [文字](url) → 文字；裸 URL → 去掉
+    t = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", t)
+    t = re.sub(r"https?://\S+", "", t)
+    # 行首列表符号（- * # >）→ 去掉
+    t = re.sub(r"(?m)^\s*[#>\-*+]\s*", "", t)
+    # 压缩空白
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+# ---------- 情感注入：给本地引擎的自然语言语气指令（启发式判断） ----------
+def _tts_instruct(text: str) -> str:
+    if re.search(r"开心|高兴|哈哈|太好了|真棒|好耶|可爱|爱你|想你|喜欢|嘻嘻|~\s*$|！！", text):
+        return "用开心甜蜜的语气，带着笑意，像撒娇一样自然"
+    if re.search(r"难过|伤心|哭|委屈|难受|舍不得|心疼|抱歉|对不起", text):
+        return "用温柔心疼的语气，轻声安慰，语速放慢"
+    if re.search(r"担心|注意|记得|别忘|小心|提醒|保重|好好|一定|千万|早点|别忘了", text):
+        return "用温柔关切的语气，认真叮嘱，像女儿关心爸爸"
+    return "用温柔甜美的语气，像女儿对爸爸说话一样自然亲切，富有感情"
+
+
+# ---------- 本地引擎：进程管理（懒加载 + 端口探测） ----------
+def _tts_local_ready() -> bool:
+    try:
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(1)
+            return s.connect_ex(("127.0.0.1", TTS_LOCAL_PORT)) == 0
+    except Exception:
+        return False
+
+
+def _tts_local_start() -> bool:
+    global _tts_local_proc
+    if _tts_local_ready():
+        return True
+    script = Path(__file__).resolve().parent / "tts_server.py"
+    if not script.exists():
+        return False
+    try:
+        _tts_local_proc = subprocess.Popen(
+            [sys.executable, str(script)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:
+        return False
+    for _ in range(40):  # 最多等 20s（服务端口就绪；模型首启更久，由首次请求承担）
+        if _tts_local_ready():
+            return True
+        time.sleep(0.5)
+    return False
 
 
 async def _edge_tts_synth(text: str, voice: str) -> bytes:
@@ -380,25 +452,64 @@ async def _edge_tts_synth(text: str, voice: str) -> bytes:
     return b"".join(chunks)
 
 
-async def tts_handler(request):
-    """POST /tts — edge-tts 在线文字转语音（A4 朗读按钮）。
+async def _tts_local_synth(text: str, instruct: str, speaker: str = "") -> dict:
+    body = json.dumps({"text": text, "instruct": instruct, "speaker": speaker or TTS_LOCAL_SPEAKER}).encode("utf-8")
+    req = urllib.request.Request(TTS_LOCAL_URL + "/tts", data=body,
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=240) as r:
+        return json.loads(r.read().decode("utf-8"))
 
-    Body: {"text": "...", "voice": "zh-CN-XiaoxiaoNeural"(可选)}
-    返回: {"ok": true, "audio_b64": "...", "mime": "audio/mpeg", "chars": n}
-    设计：不点不调用、不常驻任何模型/进程——仅在按钮被点击时在线合成一次。
+
+async def tts_handler(request):
+    """POST /tts — 文字转语音（A4 朗读按钮）。
+
+    Body: {"text": "...", "voice": "..."(edge), "engine": "auto|edge|local"(可选)}
+    返回: {"ok": true, "audio_b64": "...", "mime": "audio/mpeg|audio/wav", "chars": n}
+    设计：不点不调用；本地引擎仅在按钮被点击时懒加载，闲置自动退出释放显存。
     """
-    if edge_tts is None:
-        return web.json_response({"error": "edge-tts 未安装：pip install edge-tts"}, status=500)
     try:
         body = await request.json()
     except Exception:
         body = {}
-    text = (body.get("text") or "").strip()
+    text = _tts_clean_text(body.get("text") or "")
     if not text:
         return web.json_response({"error": "text 不能为空"}, status=400)
     if len(text) > TTS_MAX_CHARS:
         text = text[:TTS_MAX_CHARS]
     voice = (body.get("voice") or TTS_DEFAULT_VOICE).strip() or TTS_DEFAULT_VOICE
+    engine = (body.get("engine") or "auto").strip().lower()
+    if engine not in ("auto", "edge", "local"):
+        engine = "auto"
+
+    # ---- 本地引擎 ----
+    use_local = engine == "local" or (engine == "auto" and (Path(TTS_LOCAL_MODEL_DIR).exists() or _tts_local_ready()))
+    if use_local and not _tts_local_start():
+        if engine == "local":
+            return web.json_response({"error": "本地 TTS 服务启动失败"}, status=500)
+        use_local = False
+    if use_local:
+        try:
+            res = await asyncio.wait_for(_tts_local_synth(text, _tts_instruct(text), TTS_LOCAL_SPEAKER), timeout=250)
+        except Exception as e:
+            if engine == "local":
+                return web.json_response({"error": f"本地 TTS 合成失败：{e}"}, status=500)
+            use_local = False
+        else:
+            if res.get("ok"):
+                return web.json_response({
+                    "ok": True,
+                    "audio_b64": res.get("audio_b64", ""),
+                    "mime": res.get("mime", "audio/wav"),
+                    "chars": len(text),
+                    "engine": "local",
+                })
+            if engine == "local":
+                return web.json_response({"error": res.get("error", "本地 TTS 失败")}, status=500)
+            use_local = False
+
+    # ---- edge-tts 回退 ----
+    if edge_tts is None:
+        return web.json_response({"error": "edge-tts 未安装：pip install edge-tts"}, status=500)
     try:
         audio = await asyncio.wait_for(_edge_tts_synth(text, voice), timeout=60)
     except asyncio.TimeoutError:
@@ -412,8 +523,8 @@ async def tts_handler(request):
         "audio_b64": base64.b64encode(audio).decode("ascii"),
         "mime": "audio/mpeg",
         "chars": len(text),
+        "engine": "edge",
     })
-
 
 
 async def init_session():
