@@ -76,6 +76,7 @@ let currentProvider = localStorage.getItem('xiaoman_provider') || 'deepseek';
 let serverConnected = false;      // Agent 后端是否连上
 let localApproved = false;        // 本会话是否已确认启动本地模型（每次登录需重新确认）
 let connectivity = null;          // {deepseek_ok, ollama_running, local_model_ready}
+let currentIntimacy = 'warm';       // 当前亲密程度（温馨/亲密），refreshIntimacy 刷新
 
 // ============ 模型切换（DeepSeek / 本地，按需启动本地模型）============
 function providerLabel(p) {
@@ -366,6 +367,7 @@ async function refreshIntimacy() {
         const cats = (data && data.categories) || [];
         const it = findProfileItem(cats, INTIMACY_KEY);
         const level = (it && it.value) || 'warm';
+        currentIntimacy = level;
         if (intimacyDot) intimacyDot.className = 'wx-dot ' + (level === 'intimate' ? 'pink' : 'warm');
         if (intimacyLabel) intimacyLabel.textContent = level === 'intimate' ? '亲密模式' : '温馨模式';
         if (btnIntimacy) {
@@ -780,8 +782,11 @@ async function sendMessage() {
         // DeepSeek 模式发图：图片必须走本地视觉模型（DeepSeek 无视觉），
         // 自动确保本地模型就绪，无需手动切到本地模式
         const hasImage = !!(pendingAttachment && pendingAttachment.dataUrl);
-        // DeepSeek 无视觉 → 走本地视觉；Agnes(agnes-2.5-flash) 支持看图 → 直接发给它
-        if (hasImage && currentProvider !== 'local' && currentProvider !== 'agnes') {
+        // 本地视觉就绪判定：DeepSeek 无视觉 → 本地视觉；Agnes 温馨模式 → 直接给 Agnes 看图；
+        // Agnes 亲密模式 → 隐私优先走本地视觉（图片不上 Agnes 云端）
+        const imageNeedsLocal = (currentProvider === 'deepseek' || currentProvider === '')
+            || (currentProvider === 'agnes' && currentIntimacy === 'intimate');
+        if (hasImage && imageNeedsLocal) {
             appendMessage('图片由本地视觉模型识别，正在准备本地模型…', 'system');
             scrollToBottom();
             const ready = await ensureLocalReady();

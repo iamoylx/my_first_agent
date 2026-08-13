@@ -97,6 +97,21 @@ def _read_agnes_key() -> str:
 AGNES_API_KEY = _read_agnes_key()
 
 
+def _intimacy_intimate() -> bool:
+    """当前档案亲密程度是否为亲密（intimate）。温馨=warm/未设置=非亲密。"""
+    try:
+        prof = mem.load_profile()
+        facts = prof.get("facts", {}) or {}
+        v = facts.get("rule_intimacy_level")
+        if isinstance(v, dict):
+            if v.get("active") is False:
+                return False
+            return str(v.get("value") or "") == "intimate"
+        return str(v or "") == "intimate"
+    except Exception:
+        return False
+
+
 def _route_llm(images: bool, provider: str = "") -> tuple:
     """路由：根据前端 provider 选择本轮对话大脑。返回 (base_url, model, api_key)。
 
@@ -104,7 +119,13 @@ def _route_llm(images: bool, provider: str = "") -> tuple:
     - agnes  ：文本/看图/工具全走 Agnes（agnes-2.5-flash 支持视觉+工具），key 用 AGNES_API_KEY
     - local  ：Ollama 本地模型（key 无所谓，Ollama 忽略）
     - deepseek + 图：DeepSeek 无视觉，先走本地视觉转文字描述（在调用方处理）
+    - 亲密模式下发的图一律只走本地视觉（隐私保护：图片不上 Agnes/DeepSeek 云端）；
+      温馨模式的日常图在 Agnes 模式下交给 Agnes 处理
     """
+    intimate = _intimacy_intimate()
+    if images and intimate:
+        # 隐私优先：亲密模式发图 → 全部走本地模型（qwen3-vl 本地看图，不上云端）
+        return AGENT_LOCAL_BASE, AGENT_LOCAL_MODEL, API_KEY
     if provider == "agnes":
         return AGNES_BASE, AGNES_CHAT_MODEL, AGNES_API_KEY
     if provider == "local":
@@ -490,7 +511,7 @@ async def chat_handler(request):
             user_text = "请描述这张图片的内容"
         # 视觉 skill：DeepSeek 模式发图 → 本地模型先把图片转成文字描述，
         # 注入用户消息后交给 DeepSeek（相当于给 DeepSeek 接上"眼睛"）
-        if provider == "deepseek" and images and _vision_describe is not None:
+        if provider == "deepseek" and images and not _intimacy_intimate() and _vision_describe is not None:
             try:
                 desc = await _vision_describe(images[0], API_KEY,
                                               base_url=AGENT_LOCAL_BASE, model=AGENT_LOCAL_MODEL)
@@ -609,7 +630,7 @@ async def chat_stream_handler(request):
             except Exception:
                 pass
             # 视觉 skill：DeepSeek 发图 → 本地模型转文字描述，交给 DeepSeek
-            if provider == "deepseek" and images and _vision_describe is not None:
+            if provider == "deepseek" and images and not _intimacy_intimate() and _vision_describe is not None:
                 try:
                     desc = await _vision_describe(images[0], API_KEY,
                                                   base_url=AGENT_LOCAL_BASE, model=AGENT_LOCAL_MODEL)
