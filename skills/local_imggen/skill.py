@@ -155,7 +155,7 @@ async def generate_image(prompt: str, negative_prompt: str = '',
             headers={'Content-Type': 'application/json'},
             method='POST',
         )
-        with urllib.request.urlopen(req, timeout=300) as r:
+        with urllib.request.urlopen(req, timeout=900) as r:
             return json.loads(r.read().decode('utf-8'))
 
     try:
@@ -193,7 +193,7 @@ TOOLS = [{
     'type': 'function',
     'function': {
         'name': 'local_generate_image',
-        'description': '生成图片：优先走本地 Stable Diffusion（WebUI Forge，隐私不出本机，未启动会自动后台拉起）；温馨模式本地没起时改用 Agnes 云端生成。',
+        'description': '生成图片：优先走本地 Stable Diffusion（WebUI Forge，隐私不出本机，未启动会自动后台拉起）；温馨模式本地没起时改用 Agnes 云端生成。注意：步数建议 20-25（30 步会非常慢），尺寸建议 768 边长以内。',
         'parameters': {
             'type': 'object',
             'properties': {
