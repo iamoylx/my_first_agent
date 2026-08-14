@@ -6,7 +6,7 @@
 >
 > **档案卡 v3 板块化**：长期记忆按 5 个板块分类（用户身份 / Agent设定 / 用户偏好 / 行为规定 / 主动触发），写入自动分类 + 规范命名 + 相似去重；客户端档案卡支持板块折叠与直接编辑（`scripts/migrate_profile_v3.py` 完成 v2→v3 无丢失迁移）。
 >
-> **进化路线见 `plan.md`**：阶段0「思考可视化」✅ + A1「主动触发」✅ + A2「生活 skill」✅ + B1「MCP 框架」✅ + **A3「本地模型」✅**（Ollama + **qwen3-vl:4b** 多模态：原生工具调用 + 看图，客户端顶部**DeepSeek/本地一键切换**，断网切本地全功能可用）→ 阶段B2（健康数据）→ 阶段C（微信/常驻化）。客户端已支持**图片附件**并真正「看图」。
+> **进化路线见 `plan.md`**：阶段0「思考可视化」✅ + A1「主动触发」✅ + A2「生活 skill」✅ + B1「MCP 框架」✅ + **A3「本地模型」✅**（Ollama + **qwen3-vl:8b** 多模态：原生工具调用 + 看图，客户端顶部**DeepSeek/本地一键切换**，断网切本地全功能可用）+ **A5「生图」✅**（Agnes 云端生图/生视频 + 本地 Forge 隐私生图，动漫/写实双模型）→ 阶段B2（健康数据）→ 阶段C（微信/常驻化）。客户端已支持**图片附件**并真正「看图」。
 
 ---
 
@@ -127,6 +127,15 @@ npx tauri build             # 在 src-tauri/target/release 产出 agent-desktop.
 
 > 内容合规说明：Agnes 平台侧有内容审核，成人/违规内容无法绕过生成，本集成不做任何绕过。
 
+## 三点九、本地生图（Forge，隐私优先）
+
+亲密模式下调用 **local_generate_image** 走本地 Stable Diffusion（WebUI Forge，API 127.0.0.1:7860），图片只落本机 **generated/**，绝不上云；温馨模式本地未启动时回退 Agnes 云端。
+
+- Forge 目录：D:\DevTools\stable-diffusion-webui-forge；启动脚本 start-api.bat（--api --medvram --no-half-vae，已防 GitHub 卡死）。
+- 模型：Juggernaut-XI-byRunDiffusion.safetensors（写实，默认）/ animagine-xl-3.1.safetensors（动漫，待接入自动切换）。
+- 默认参数：steps 20 / DPM++ 2M Karras / 768x768 / cfg 7.0 / 质量负向词；内容零限制。
+- 环境变量：AGENT_FORGE_BASE（默认 http://127.0.0.1:7860）、AGENT_FORGE_DIR（默认 D:/DevTools/stable-diffusion-webui-forge）、AGENT_GEN_DIR（默认项目根 generated）。
+
 ## 四、模块接口定义与必要路径
 
 ### 4.1 统一记忆层 `MemoryStore`（`memory/store.py`）
@@ -163,12 +172,14 @@ npx tauri build             # 在 src-tauri/target/release 产出 agent-desktop.
 
 每个技能对外暴露 `TOOLS`（给 LLM 的 schema）与 `TOOL_MAP`（可调函数）。`skills.collect_tools(*pairs)` 聚合成统一清单，主循环分发逻辑零改动。
 
-当前注册（15 个）：`web_search` / `get_current_time` / `calculator` / `read_file` / `list_dir` / `search_files` / `search_content` / `run_command` / `write_memory` / `create_reminder` / `list_reminders` / `delete_reminder` / `get_weather` / `record_health` / `health_records`。
+当前注册（18 个）：`web_search` / `get_current_time` / `calculator` / `read_file` / `list_dir` / `search_files` / `search_content` / `run_command` / `write_memory` / `create_reminder` / `list_reminders` / `delete_reminder` / `get_weather` / `record_health` / `health_records` / `generate_image` / `generate_video` / `local_generate_image`。
 
 - `reminder_tools`：对话中「提醒我明天下午3点开会」→ `create_reminder` 存任务 → `ReminderSource` 到点主动提醒（任务存独立 `task_data/`，与记忆完全分离）。
 - `weather`：`get_weather` 查城市天气（Open-Meteo，免费无需 Key，支持中文城市名 + 未来3天预报）。
 - `health_record`：`record_health` / `health_records` 记录睡眠/体重/步数/心率/饮水/心情 → 记忆 events（为健康 MCP 打底）。
 
+- `agnes_gen`：`generate_image`（agnes-image-2.1-flash）/ `generate_video`（agnes-video-v2.0，异步轮询）→ 存 `generated/` 聊天直显；Key 读 `desktop-client/.agnes_key` 或 `AGNES_API_KEY`。
+- `local_imggen`：`local_generate_image` 本地 Forge 生图（隐私，亲密模式自动后台拉起 Forge 绝不上云，温馨模式未启动时回退 Agnes）；默认 20 步 / DPM++ 2M Karras / 768x768 / cfg 7.0；模型 Juggernaut-XI（写实，默认）/ animagine-xl-3.1（动漫）。
 - `web_search`：URL 写死 `https://api.tavily.com/search`，Key 仅读 `TAVILY_API_KEY`（防 SSRF / 投毒）。
 - `code_tools`：`run_command` 经 `_DENY` 正则拦截 `rm -rf` / `format` / `shutdown` / `sudo` / `curl|sh` 等高危指令；文件类工具相对路径按项目根解析。
 
@@ -214,11 +225,23 @@ Rust 侧 Tauri Commands（前端 `invoke` 名）：`start_python_server` / `stop
 
 ---
 
+### 4.7 外部依赖路径（非 pip）
+
+| 路径 | 角色 |
+|------|------|
+| D:\DevTools\stable-diffusion-webui-forge | Forge 生图引擎（模型 Juggernaut-XI 6.62GB + animagine-xl-3.1 6.46GB） |
+| D:\ollama | Ollama 数据 + qwen3-vl:8b（6.2GB，端口 11434） |
+| D:\dsh | dsh 桌面版（node 便携 + @deepseek-ai/dsh rc.6，端口 3080；快捷方式「dsh 桌面版」→ WScript 运行 start-desktop.vbs） |
+| D:\document\AGENT_archives\ | 历史记忆备份 / 旧测试归档 |
+| 桌面「小满.lnk」 | 根目录 agent-desktop.exe（Tauri 客户端，自动拉起后端 18789） |
+
 ## 五、环境变量与依赖
 
 完整清单见 `requirement.txt`。要点：
 
 - **必填**：`DEEPSEEK_API_KEY`（缺失启动即报错）。
+- **Agnes**：`AGNES_API_KEY`（或 desktop-client/.agnes_key，生图/生视频/对话共用）。
+- **生图**：`AGENT_FORGE_BASE` / `AGENT_FORGE_DIR` / `AGENT_GEN_DIR`（见三点九，均有默认值）。
 - **可选**：`TAVILY_API_KEY`（联网搜索）、`AGENT_USER_ID`（记忆隔离，默认 `default`）、`AGENT_PORT`（桌面后端端口，默认 `18789`）、`WECOM_WEBHOOK_URL`（企业微信群机器人 webhook，配置后主动消息同步推送企微）。
 - **A3 本地模型**：`AGENT_LOCAL_BASE`（默认 `http://127.0.0.1:11434/v1`）、`AGENT_LOCAL_MODEL`（默认 `qwen3-vl:8b`，需本机 Ollama 已导入该模型）。客户端聊天头部有 **DeepSeek / 本地** 切换按钮（localStorage 记忆）：
   - **按需启动**：每次登录后第一次选「本地」弹确认框，确认才启动 Ollama+模型（预加载）；切回 DeepSeek / 退出应用自动卸载释放显存；不选本地零占用。
@@ -226,7 +249,7 @@ Rust 侧 Tauri Commands（前端 `invoke` 名）：`start_python_server` / `stop
   - **图片**：发送前自动降采样（最大 1280px）+ 请求体上限 30MB；DeepSeek 模式发图走本地视觉转描述（视觉 skill 为可插拔接口，`skills/vision.describe_image`，装更好的开源 skill 即可自动接入）；本地模式直接看图。
   - **技能按钮**：聊天输入框左侧⚡按钮列出全部已安装技能（联网搜索/基础/代码/记忆/提醒/天气/健康/MCP），自选后命令小满执行（类似 codex 的 @ 技能）。
   - **主动触发 v2**：档案「主动触发」板块支持任意「时间+内容」条目（时间格式：下午五点/16:30/一点半/晚上7点半；重复模式：每天/每周X/工作日/周末/每N天/X月X日），含「提醒」时优先取提醒词前的时间（如"一点半时提醒睡觉"→01:30）。
-  - **本地模式**：全部消息（含图片）走 qwen3-vl:4b，断网可用，原生工具调用 + 看图；
+  - **本地模式**：全部消息（含图片）走 qwen3-vl:8b，断网可用，原生工具调用 + 看图；
   - **DeepSeek 模式**：文本走 DeepSeek；仅当发图片时该轮临时走本地视觉（DeepSeek 无视觉）。
   - `AGENT_LOCAL_TEXT=1`：兼容旧逻辑，纯文本也强制走本地。
 - **pip 依赖**：`aiohttp`（必需）；`tiktoken`（可选，更准的 token 估算）。
@@ -259,7 +282,7 @@ Rust 侧 Tauri Commands（前端 `invoke` 名）：`start_python_server` / `stop
 | A1 | 主动触发机制（作息/健身/空闲关心 → 桌宠气泡+主窗口；全屏免打扰；MCP/微信接口预留） | 已完成 |
 | A2 | 生活 skill（reminder/todo 提醒任务 + weather 天气 + health_record 健康记录） | 已完成 |
 | A2.5 | 客户端图片附件（输入框选图/粘贴→base64→后端保存 logs/uploads） | 已完成 |
-| A3 | 本地模型接入（Ollama + qwen3-vl:4b 多模态：原生工具调用 + 看图；客户端 DeepSeek/本地 一键切换；detect 对不支持工具的模型自动降级） | 已完成 |
+| A3 | 本地模型接入（Ollama + qwen3-vl:8b 多模态：原生工具调用 + 看图；客户端 DeepSeek/本地 一键切换；detect 对不支持工具的模型自动降级） | 已完成 |
 | 3.13 | 档案卡 v3 板块化（5 板块 + 自动分类/命名规范/去重 + 前端折叠/编辑 + 无丢失迁移） | 已完成 |
 | B1 | 通用 MCP 框架（mcp_bridge 配置式 client + 工具动态注册 + /mcp/tools）+ Obsidian 笔记接入 + 企业微信推送 Carrier | 已完成 |
 | 1 | STM：token 滑动窗口 `prune()` | 已完成 |
@@ -282,4 +305,5 @@ Rust 侧 Tauri Commands（前端 `invoke` 名）：`start_python_server` / `stop
 - 长会话仍靠 `prune()` 控制窗口；`/summary --llm` + `/load` 注入锚点是当前连续性方案。
 - 抽取已改为增量（`buffer_round` 累积新增轮次，会话结束只发新增）。
 - `memory/` 包内无死代码。
+- 生图：Juggernaut-XI 只到 softcore（显式生殖器弱），Animagine 3.1 官方 SFW 且未接入自动切换；Forge 生图占 ~6.6GB 显存，16GB 整机易吃满；聊天与生图互斥（生图期间对话阻塞）。
 - 桌面客户端已清理：诊断文件改写入系统临时目录、`find_python` 不再硬编码用户路径（支持 `AGENT_PYTHON` / PATH / 托管目录 glob）、`pet_manager` 状态机已接线（`set_pet_state` 命令 + `pet://state-changed` 事件）、桌面退出会触发 `finalize`（时间戳归档 + LTM 档案抽取）。

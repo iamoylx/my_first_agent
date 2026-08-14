@@ -1,42 +1,52 @@
 # ============================================================
-# AGENT —— 记忆增强型终端 / 桌面 Agent（DeepSeek Function Calling）
+# AGENT —— 记忆增强型终端 / 桌面 Agent（DeepSeek + 本地 Ollama + 生图）
 # Python 运行时依赖清单（pip install -r requirement.txt）
+# 更新：2026-08-14（生图 / Agnes / 本地视觉；TTS 已移除）
 # ============================================================
 
 # ---- 运行必需 ----
-aiohttp>=3.9            # 异步 HTTP：终端/桌宠主循环与 DeepSeek API、Tavily 搜索、
-                        # 本地 HTTP 服务(agent-server.py) 均依赖
+aiohttp>=3.9            # 异步 HTTP：agent-server.py / 桌宠主循环 / DeepSeek API / Tavily 搜索 / 本地 HTTP 服务
+tiktoken>=0.5           # 更精确的 token 估算（memory/token_window.py STM 滑动窗口）；缺失回退字符启发式
 
-# ---- 可选（不装则自动回退字符启发式，功能不受影响）----
-tiktoken>=0.5           # 更精确的 token 估算，memory/token_window.py 的 STM 滑动窗口
-                        # 用于判断是否超窗口；缺失时回退 CJK≈1字/英文按字母数粗估
-
-# ---- LangChain 后端（core/agent_core.py 的模型/工具调用/流式层）----
+# ---- LangChain 后端（core/agent_core.py 的模型/工具/流式层）----
 langchain-core>=1.4     # 消息模型 / bind_tools / astream 基础
-langchain-openai>=1.3   # ChatOpenAI（DeepSeek 走 OpenAI 兼容端点）
+langchain-openai>=1.3   # ChatOpenAI（DeepSeek / Ollama / Agnes 均走 OpenAI 兼容端点）
+openai>=2.0             # langchain-openai 的底层 SDK（随其自动安装，显式声明便于排查）
+
+# ---- MCP 桥（mcp_bridge/，B1 通用 MCP 客户端框架）----
+mcp>=1.26               # Model Context Protocol SDK（client 端）
 
 # ============================================================
 # 运行环境要求（非 pip 依赖，但必须存在）
 # ============================================================
-# Python:       >= 3.10（开发/运行环境使用 3.13.12 托管 Python）
-# 网络:         必须可联网访问 https://api.deepseek.com
+# Python:       >= 3.10（开发/运行环境使用 Python312：C:\Users\绿\AppData\Local\Programs\Python\Python312）
+# 网络:         必须可联网访问 https://api.deepseek.com（本地模式可断网）
 #
-# ---- 所需环境变量（代码一律用 os.getenv 读取，切勿硬编码到源码）----
-# DEEPSEEK_API_KEY  必填    DeepSeek API 密钥；缺失则 AGENT.py / agent-server.py 启动即报错
-# TAVILY_API_KEY    可选    联网搜索 web_search 技能用；缺失时 web_search 返回"未配置"提示，不影响其它功能
-# AGENT_USER_ID     可选    记忆隔离的用户维度，默认 "default"；不同值对应 memory_data/users/<id>/ 独立记忆
-# AGENT_PORT        可选    桌面端 Python 后端监听端口，默认 18789（仅 desktop-client 使用）
+# ---- 所需环境变量（代码一律 os.getenv 读取，切勿硬编码到源码）----
+# DEEPSEEK_API_KEY  必填    DeepSeek API 密钥；缺失则启动即报错
+# TAVILY_API_KEY    可选    联网搜索 web_search 技能；缺失时返回"未配置"，不影响其它功能
+# AGENT_USER_ID     可选    记忆隔离维度，默认 "default"；对应 memory_data/users/<id>/
+# AGENT_PORT        可选    桌面端 Python 后端端口，默认 18789
+# AGNES_API_KEY     可选    Agnes 生图/生视频/对话（或 desktop-client/.agnes_key）
+# AGENT_FORGE_BASE  可选    本地 Forge API，默认 http://127.0.0.1:7860
+# AGENT_FORGE_DIR   可选    本地 Forge 目录，默认 D:/DevTools/stable-diffusion-webui-forge
+# AGENT_GEN_DIR     可选    生图输出目录，默认 项目根/generated
+# AGENT_LOCAL_BASE / AGENT_LOCAL_MODEL  可选  本地 Ollama（默认 http://127.0.0.1:11434/v1 + qwen3-vl:8b）
+# OLLAMA_KEEP_ALIVE 可选    本地模型闲置卸载（建议 10m）
+#
+# ---- 外部程序 / 模型（非 pip，详见 README 4.7 / handoff.md）----
+# Ollama:     D:\ollama（qwen3-vl:8b，端口 11434，本地模式 + 视觉）
+# Forge:      D:\DevTools\stable-diffusion-webui-forge（Juggernaut-XI 写实 / animagine-xl-3.1 动漫，端口 7860）
+# dsh:        D:\dsh（DeepSeek Harness 桌面版，端口 3080）
+# 微信桥:     wechat_bridge/（Node >= 22 + weixin-agent-sdk，端口 18888）
 #
 # ---- 桌面客户端（desktop-client）构建前提（非 pip）----
-# 需另行安装：
-#   - Rust + Cargo（含 MSVC 工具链，Windows 推荐 Visual Studio Build Tools）
-#   - Node.js + npm（Tauri CLI 走 @tauri-apps/cli ^2.11.4）
-#   - 系统 WebView2 运行时（本机依赖 Windows 自带 EdgeWebView，详见 README / handoff.md）
-# Rust 依赖见 desktop-client/src-tauri/Cargo.toml：
-#   tauri / serde / serde_json / tokio / reqwest
+# Rust + Cargo（MSVC 工具链）、Node.js + npm（@tauri-apps/cli ^2.11.4）、系统 WebView2
+# Rust 依赖见 desktop-client/src-tauri/Cargo.toml：tauri / serde / serde_json / tokio / reqwest
 
-# ---- MCP 桥（mcp_bridge/，B1 通用 MCP 客户端框架）----
-mcp>=1.26          # Model Context Protocol SDK（client 端）
-
-# ---- 可选：browser-use（浏览器控制 MCP server，启用前需 playwright install chromium）----
-# browser-use>=0.13
+# ============================================================
+# 已移除 / 不再需要（历史记录，勿重装）
+# ============================================================
+# edge-tts / soundfile / pydub / torchaudio / torch / torchvision：TTS 功能已于 2026-08-13 移除
+#   （用户决定：本地模型太小不好用；torch 2.5.1+cu124 仍装在全局环境，勿动）
+# pillow / requests / beautifulsoup4 / httpx：环境残留，项目代码当前不直接 import，非必需
